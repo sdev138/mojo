@@ -17,6 +17,9 @@
 
 from python.python import Python
 
+def lets_edit_interlop():
+    print("We're inside the interlop function")
+    print("Trying out the Mojo programming langauge!")
 
 def main():
     print("Hello Mojo 🔥!")
@@ -26,3 +29,4 @@ def main():
     Python.add_to_path("./examples")
     var test_module = Python.import_module("simple_interop")
     test_module.test_interop_func()
+    lets_edit_interlop()
