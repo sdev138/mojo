@@ -21,6 +21,9 @@ def lets_edit_interlop():
     print("We're inside the interlop function")
     print("Trying out the Mojo programming langauge!")
 
+def arithmetic(value1, value2):
+    return value1 + value2
+
 def main():
     print("Hello Mojo 🔥!")
     for x in range(9, 0, -3):
@@ -30,3 +33,4 @@ def main():
     var test_module = Python.import_module("simple_interop")
     test_module.test_interop_func()
     lets_edit_interlop()
+    print(arithmetic(2, 10))
