@@ -11,14 +11,17 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-from os import getenv
+from collections import InlineArray
+from os import getenv, setenv
+from os.path import dirname
+from pathlib import Path
 from sys import external_call
-from sys.ffi import DLHandle
+from sys.arg import argv
+from sys.ffi import DLHandle, C_char
 
-from memory.unsafe import DTypePointer, Pointer
+from memory import UnsafePointer
 
 from utils import StringRef
-from utils.index import StaticIntTuple
 
 # https://github.com/python/cpython/blob/d45225bd66a8123e4a30314c627f2586293ba532/Include/compile.h#L7
 alias Py_single_input = 256
@@ -39,12 +42,11 @@ struct PyKeyValuePair:
 @value
 @register_passable("trivial")
 struct PyObjectPtr:
-    var value: DTypePointer[DType.int8]
+    var value: UnsafePointer[Int8]
 
-    @staticmethod
-    fn null_ptr() -> PyObjectPtr:
-        var null_pointer = DTypePointer[DType.int8].get_null()
-        return PyObjectPtr {value: null_pointer}
+    @always_inline("nodebug")
+    fn __init__(inout self):
+        self.value = UnsafePointer[Int8]()
 
     fn is_null(self) -> Bool:
         return int(self.value) == 0
@@ -67,9 +69,9 @@ struct PythonVersion:
     var minor: Int
     var patch: Int
 
-    fn __init__(version: StringRef) -> PythonVersion:
+    fn __init__(inout self, version: StringRef):
         var version_string = String(version)
-        var components = StaticIntTuple[3]()
+        var components = InlineArray[Int, 3](-1)
         var start = 0
         var next_idx = 0
         var i = 0
@@ -85,66 +87,14 @@ struct PythonVersion:
                 i += 1
                 start = next_idx + 1
             next_idx += 1
-        return PythonVersion(components[0], components[1], components[2])
-
-
-fn _py_initialize(inout cpython: CPython):
-    # Configure the Python interpreter to search for libraries installed in
-    # "site-package" directories. If we don't do this, and a `virtualenv`
-    # is activated when invoking `mojo`, then the Python interpreter will
-    # use the system's `site-package` directories instead of the
-    # `virtualenv` ones.
-    #
-    # This function does not overwrite any existing `PYTHONPATH`, in case
-    # the user wants to specify this environment variable themselves.
-    #
-    # Finally, another approach is to use `Py_SetPath()`, but that requires
-    # setting explicitly every library search path, as well as needing to
-    # specify a `PYTHONHOME`. This is much more complicated and restrictive
-    # to be considered a better solution.
-    var error_message: StringRef = external_call[
-        "KGEN_CompilerRT_Python_SetPythonPath",
-        DTypePointer[DType.int8],
-    ]()
-    if len(error_message) != 0:
-        # Print the error message, but keep going in order to allow
-        # `Py_Initialize` to fail.
-        print("Mojo/Python interoperability error: ", error_message)
-
-    cpython.lib.get_function[fn () -> None]("Py_Initialize")()
+        self = PythonVersion(components[0], components[1], components[2])
 
 
 fn _py_get_version(lib: DLHandle) -> StringRef:
-    var version_string = lib.get_function[fn () -> DTypePointer[DType.int8]](
+    var version_string = lib.get_function[fn () -> UnsafePointer[C_char]](
         "Py_GetVersion"
     )()
     return StringRef(version_string)
-
-
-fn _py_initialize(lib: DLHandle):
-    # Configure the Python interpreter to search for libraries installed in
-    # "site-package" directories. If we don't do this, and a `virtualenv`
-    # is activated when invoking `mojo`, then the Python interpreter will
-    # use the system's `site-package` directories instead of the
-    # `virtualenv` ones.
-    #
-    # This function does not overwrite any existing `PYTHONPATH`, in case
-    # the user wants to specify this environment variable themselves.
-    #
-    # Finally, another approach is to use `Py_SetPath()`, but that requires
-    # setting explicitly every library search path, as well as needing to
-    # specify a `PYTHONHOME`. This is much more complicated and restrictive
-    # to be considered a better solution.
-    var error_message: StringRef = external_call[
-        "KGEN_CompilerRT_Python_SetPythonPath",
-        DTypePointer[DType.int8],
-    ]()
-    if len(error_message) != 0:
-        # Print the error message, but keep going in order to allow
-        # `Py_Initialize` to fail.
-        print("Mojo/Python interoperability error: ", error_message)
-
-    lib.get_function[fn () -> None]("Py_Initialize")()
 
 
 fn _py_finalize(lib: DLHandle):
@@ -157,41 +107,91 @@ struct CPython:
     var dict_type: PyObjectPtr
     var logging_enabled: Bool
     var version: PythonVersion
-    var total_ref_count: Pointer[Int]
+    var total_ref_count: UnsafePointer[Int]
+    var init_error: StringRef
 
     fn __init__(inout self: CPython):
         var logging_enabled = getenv("MODULAR_CPYTHON_LOGGING") == "ON"
         if logging_enabled:
             print("CPython init")
-        var python_lib = getenv("MOJO_PYTHON_LIBRARY")
-        if python_lib == "":
-            print(
-                "Mojo/Python interoperability error: Unable to locate a"
-                " suitable libpython, please set `MOJO_PYTHON_LIBRARY`"
-            )
+            print("MOJO_PYTHON:", getenv("MOJO_PYTHON"))
+            print("MOJO_PYTHON_LIBRARY:", getenv("MOJO_PYTHON_LIBRARY"))
 
-        var null_pointer = DTypePointer[DType.int8].get_null()
+        # Add directory of target file to top of sys.path to find python modules
+        var file_dir = dirname(argv()[0])
+        if Path(file_dir).is_dir() or file_dir == "":
+            var python_path = getenv("PYTHONPATH")
+            # A leading `:` will put the current dir at the top of sys.path.
+            # If we're doing `mojo run main.mojo` or `./main`, the returned
+            # `dirname` will be an empty string.
+            if file_dir == "" and not python_path:
+                file_dir = ":"
+            if python_path:
+                _ = setenv("PYTHONPATH", file_dir + ":" + python_path)
+            else:
+                _ = setenv("PYTHONPATH", file_dir)
+
+        # TODO(MOCO-772) Allow raises to propagate through function pointers
+        # and make this initialization a raising function.
+        self.init_error = external_call[
+            "KGEN_CompilerRT_Python_SetPythonPath",
+            UnsafePointer[C_char],
+        ]()
+
+        var python_lib = getenv("MOJO_PYTHON_LIBRARY")
+
+        if logging_enabled:
+            print("PYTHONEXECUTABLE:", getenv("PYTHONEXECUTABLE"))
+            print("libpython selected:", python_lib)
 
         self.lib = DLHandle(python_lib)
-        self.total_ref_count = Pointer[Int].alloc(1)
-        self.none_value = PyObjectPtr(null_pointer)
-        self.dict_type = PyObjectPtr(null_pointer)
+        self.total_ref_count = UnsafePointer[Int].alloc(1)
+        self.none_value = PyObjectPtr()
+        self.dict_type = PyObjectPtr()
         self.logging_enabled = logging_enabled
-        self.version = PythonVersion(_py_get_version(self.lib))
-
-        _py_initialize(self.lib)
-        _ = self.Py_None()
-        _ = self.PyDict_Type()
+        if not self.init_error:
+            if not self.lib.check_symbol("Py_Initialize"):
+                self.init_error = "compatible Python library not found"
+            self.lib.get_function[fn () -> None]("Py_Initialize")()
+            self.version = PythonVersion(_py_get_version(self.lib))
+            _ = self.Py_None()
+            _ = self.PyDict_Type()
+        else:
+            self.version = PythonVersion(0, 0, 0)
 
     @staticmethod
     fn destroy(inout existing: CPython):
         existing.Py_DecRef(existing.none_value)
         if existing.logging_enabled:
             print("CPython destroy")
-            print("Number of remaining refs:", existing.total_ref_count.load())
+            var remaining_refs = existing.total_ref_count.take_pointee()
+            print("Number of remaining refs:", remaining_refs)
+            # Technically not necessary since we're working with register
+            # passable types, by it's good practice to re-initialize the
+            # pointer after a consuming move.
+            existing.total_ref_count.init_pointee_move(remaining_refs)
         _py_finalize(existing.lib)
         existing.lib.close()
         existing.total_ref_count.free()
+
+    fn check_init_error(self) raises:
+        """Used for entry points that initialize Python on first use, will
+        raise an error if one occurred when initializing the global CPython.
+        """
+        if self.init_error:
+            var error: String = self.init_error
+            var mojo_python = getenv("MOJO_PYTHON")
+            var python_lib = getenv("MOJO_PYTHON_LIBRARY")
+            var python_exe = getenv("PYTHONEXECUTABLE")
+            if mojo_python:
+                error += "\nMOJO_PYTHON: " + mojo_python
+            if python_lib:
+                error += "\nMOJO_PYTHON_LIBRARY: " + python_lib
+            if python_exe:
+                error += "\npython executable: " + python_exe
+            error += "\n\nMojo/Python interop error, troubleshooting docs at:"
+            error += "\n    https://modul.ar/fix-python\n"
+            raise error
 
     fn Py_None(inout self) -> PyObjectPtr:
         """Get a None value, of type NoneType."""
@@ -216,14 +216,15 @@ struct CPython:
         self.logging_enabled = existing.logging_enabled
         self.version = existing.version
         self.total_ref_count = existing.total_ref_count
+        self.init_error = existing.init_error
 
     fn _inc_total_rc(inout self):
-        var v = self.total_ref_count.load()
-        self.total_ref_count[0] = v + 1
+        var v = self.total_ref_count.take_pointee()
+        self.total_ref_count.init_pointee_move(v + 1)
 
     fn _dec_total_rc(inout self):
-        var v = self.total_ref_count.load()
-        self.total_ref_count[0] = v - 1
+        var v = self.total_ref_count.take_pointee()
+        self.total_ref_count.init_pointee_move(v - 1)
 
     fn Py_IncRef(inout self, ptr: PyObjectPtr):
         if self.logging_enabled:
@@ -240,6 +241,18 @@ struct CPython:
             )
         self.lib.get_function[fn (PyObjectPtr) -> None]("Py_DecRef")(ptr)
         self._dec_total_rc()
+
+    fn PyGILState_Ensure(inout self) -> Bool:
+        return self.lib.get_function[fn () -> Bool]("PyGILState_Ensure")()
+
+    fn PyGILState_Release(inout self, state: Bool):
+        self.lib.get_function[fn (Bool) -> None]("PyGILState_Release")(state)
+
+    fn PyEval_SaveThread(inout self) -> Int64:
+        return self.lib.get_function[fn () -> Int64]("PyEval_SaveThread")()
+
+    fn PyEval_RestoreThread(inout self, state: Int64):
+        self.lib.get_function[fn (Int64) -> None]("PyEval_RestoreThread")(state)
 
     # This function assumes a specific way PyObjectPtr is implemented, namely
     # that the refcount has offset 0 in that structure. That generally doesn't
@@ -296,9 +309,9 @@ struct CPython:
         inout self,
         name: StringRef,
     ) -> PyObjectPtr:
-        var r = self.lib.get_function[
-            fn (DTypePointer[DType.int8]) -> PyObjectPtr
-        ]("PyImport_ImportModule")(name.data)
+        var r = self.lib.get_function[fn (UnsafePointer[UInt8]) -> PyObjectPtr](
+            "PyImport_ImportModule"
+        )(name.data)
         if self.logging_enabled:
             print(
                 r._get_ptr_as_int(),
@@ -320,9 +333,9 @@ struct CPython:
             `True` if the code executed successfully or `False` if the code
             raised an exception.
         """
-        var status = self.lib.get_function[
-            fn (DTypePointer[DType.int8]) -> Int
-        ](StringRef("PyRun_SimpleString"))(strref.data)
+        var status = self.lib.get_function[fn (UnsafePointer[UInt8]) -> Int](
+            StringRef("PyRun_SimpleString")
+        )(strref.data)
         # PyRun_SimpleString returns 0 on success and -1 if an exception was
         # raised.
         return status == 0
@@ -337,8 +350,8 @@ struct CPython:
         var result = PyObjectPtr(
             self.lib.get_function[
                 fn (
-                    DTypePointer[DType.int8], Int32, PyObjectPtr, PyObjectPtr
-                ) -> DTypePointer[DType.int8]
+                    UnsafePointer[UInt8], Int32, PyObjectPtr, PyObjectPtr
+                ) -> UnsafePointer[Int8]
             ]("PyRun_String")(strref.data, Int32(run_mode), globals, locals)
         )
         if self.logging_enabled:
@@ -354,13 +367,43 @@ struct CPython:
         self._inc_total_rc()
         return result
 
+    fn PyEval_EvalCode(
+        inout self,
+        co: PyObjectPtr,
+        globals: PyObjectPtr,
+        locals: PyObjectPtr,
+    ) -> PyObjectPtr:
+        var result = PyObjectPtr(
+            self.lib.get_function[
+                fn (
+                    PyObjectPtr, PyObjectPtr, PyObjectPtr
+                ) -> UnsafePointer[Int8]
+            ]("PyEval_EvalCode")(co, globals, locals)
+        )
+        self._inc_total_rc()
+        return result
+
+    fn Py_CompileString(
+        inout self,
+        strref: StringRef,
+        filename: StringRef,
+        compile_mode: Int,
+    ) -> PyObjectPtr:
+        var r = self.lib.get_function[
+            fn (
+                UnsafePointer[UInt8], UnsafePointer[UInt8], Int32
+            ) -> PyObjectPtr
+        ]("Py_CompileString")(strref.data, filename.data, Int32(compile_mode))
+        self._inc_total_rc()
+        return r
+
     fn PyObject_GetAttrString(
         inout self,
         obj: PyObjectPtr,
         name: StringRef,
     ) -> PyObjectPtr:
         var r = self.lib.get_function[
-            fn (PyObjectPtr, DTypePointer[DType.int8]) -> PyObjectPtr
+            fn (PyObjectPtr, UnsafePointer[UInt8]) -> PyObjectPtr
         ]("PyObject_GetAttrString")(obj, name.data)
         if self.logging_enabled:
             print(
@@ -379,7 +422,7 @@ struct CPython:
         inout self, obj: PyObjectPtr, name: StringRef, new_value: PyObjectPtr
     ) -> Int:
         var r = self.lib.get_function[
-            fn (PyObjectPtr, DTypePointer[DType.int8], PyObjectPtr) -> Int
+            fn (PyObjectPtr, UnsafePointer[UInt8], PyObjectPtr) -> Int
         ]("PyObject_SetAttrString")(obj, name.data, new_value)
         if self.logging_enabled:
             print(
@@ -453,6 +496,11 @@ struct CPython:
             )
         )
 
+    fn PyObject_Hash(inout self, obj: PyObjectPtr) -> Int:
+        return int(
+            self.lib.get_function[fn (PyObjectPtr) -> Int]("PyObject_Hash")(obj)
+        )
+
     fn PyTuple_New(inout self, count: Int) -> PyObjectPtr:
         var r = self.lib.get_function[fn (Int) -> PyObjectPtr](
             StringRef("PyTuple_New")
@@ -484,10 +532,12 @@ struct CPython:
     fn PyString_FromStringAndSize(inout self, strref: StringRef) -> PyObjectPtr:
         var r = self.lib.get_function[
             fn (
-                DTypePointer[DType.int8], Int, DTypePointer[DType.int8]
+                UnsafePointer[UInt8],
+                Int,
+                UnsafePointer[C_char],
             ) -> PyObjectPtr
         ](StringRef("PyUnicode_DecodeUTF8"))(
-            strref.data, strref.length, "strict".data()
+            strref.data, strref.length, "strict".unsafe_cstr_ptr()
         )
         if self.logging_enabled:
             print(
@@ -517,13 +567,13 @@ struct CPython:
 
     fn PyModule_GetDict(inout self, name: PyObjectPtr) -> PyObjectPtr:
         var value = self.lib.get_function[
-            fn (PyObjectPtr) -> DTypePointer[DType.int8]
+            fn (PyObjectPtr) -> UnsafePointer[Int8]
         ]("PyModule_GetDict")(name.value)
         return PyObjectPtr {value: value}
 
     fn PyImport_AddModule(inout self, name: StringRef) -> PyObjectPtr:
         var value = self.lib.get_function[
-            fn (DTypePointer[DType.int8]) -> DTypePointer[DType.int8]
+            fn (UnsafePointer[UInt8]) -> UnsafePointer[Int8]
         ]("PyImport_AddModule")(name.data)
         return PyObjectPtr {value: value}
 
@@ -631,8 +681,8 @@ struct CPython:
 
     fn PyUnicode_AsUTF8AndSize(inout self, py_object: PyObjectPtr) -> StringRef:
         var result = self.lib.get_function[
-            fn (PyObjectPtr, Pointer[Int]) -> DTypePointer[DType.int8]
-        ]("PyUnicode_AsUTF8AndSize")(py_object, Pointer[Int]())
+            fn (PyObjectPtr, UnsafePointer[Int]) -> UnsafePointer[C_char]
+        ]("PyUnicode_AsUTF8AndSize")(py_object, UnsafePointer[Int]())
         return StringRef(result)
 
     fn PyErr_Clear(inout self):
@@ -645,20 +695,20 @@ struct CPython:
         return not value.is_null()
 
     fn PyErr_Fetch(inout self) -> PyObjectPtr:
-        var type = DTypePointer[DType.int8]()
-        var value = DTypePointer[DType.int8]()
-        var traceback = DTypePointer[DType.int8]()
+        var type = UnsafePointer[Int8]()
+        var value = UnsafePointer[Int8]()
+        var traceback = UnsafePointer[Int8]()
 
-        var type_ptr = Pointer[DTypePointer[DType.int8]].address_of(type)
-        var value_ptr = Pointer[DTypePointer[DType.int8]].address_of(value)
-        var traceback_ptr = Pointer[DTypePointer[DType.int8]].address_of(
+        var type_ptr = UnsafePointer[UnsafePointer[Int8]].address_of(type)
+        var value_ptr = UnsafePointer[UnsafePointer[Int8]].address_of(value)
+        var traceback_ptr = UnsafePointer[UnsafePointer[Int8]].address_of(
             traceback
         )
         var func = self.lib.get_function[
             fn (
-                Pointer[DTypePointer[DType.int8]],
-                Pointer[DTypePointer[DType.int8]],
-                Pointer[DTypePointer[DType.int8]],
+                UnsafePointer[UnsafePointer[Int8]],
+                UnsafePointer[UnsafePointer[Int8]],
+                UnsafePointer[UnsafePointer[Int8]],
             ) -> None
         ]("PyErr_Fetch")(type_ptr, value_ptr, traceback_ptr)
         var r = PyObjectPtr {value: value}
@@ -669,6 +719,9 @@ struct CPython:
                 self._Py_REFCNT(r),
             )
         self._inc_total_rc()
+        _ = type
+        _ = value
+        _ = traceback
         return r
 
     fn Py_Is(
@@ -763,18 +816,18 @@ struct CPython:
     fn PyDict_Next(
         inout self, dictionary: PyObjectPtr, p: Int
     ) -> PyKeyValuePair:
-        var key = DTypePointer[DType.int8].get_null()
-        var value = DTypePointer[DType.int8].get_null()
+        var key = UnsafePointer[Int8]()
+        var value = UnsafePointer[Int8]()
         var v = p
-        var position = Pointer[Int].address_of(v)
-        var value_ptr = Pointer[DTypePointer[DType.int8]].address_of(value)
-        var key_ptr = Pointer[DTypePointer[DType.int8]].address_of(key)
+        var position = UnsafePointer[Int].address_of(v)
+        var value_ptr = UnsafePointer[UnsafePointer[Int8]].address_of(value)
+        var key_ptr = UnsafePointer[UnsafePointer[Int8]].address_of(key)
         var result = self.lib.get_function[
             fn (
                 PyObjectPtr,
-                Pointer[Int],
-                Pointer[DTypePointer[DType.int8]],
-                Pointer[DTypePointer[DType.int8]],
+                UnsafePointer[Int],
+                UnsafePointer[UnsafePointer[Int8]],
+                UnsafePointer[UnsafePointer[Int8]],
             ) -> Int
         ]("PyDict_Next")(
             dictionary,
@@ -798,9 +851,10 @@ struct CPython:
                 "refcnt(value)",
                 self._Py_REFCNT(value),
             )
+        _ = v
         return PyKeyValuePair {
             key: key,
             value: value,
-            position: position.load(),
+            position: position.take_pointee(),
             success: result == 1,
         }

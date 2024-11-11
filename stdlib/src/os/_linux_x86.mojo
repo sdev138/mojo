@@ -12,8 +12,8 @@
 # ===----------------------------------------------------------------------=== #
 
 from time.time import _CTimeSpec
-
-from utils.index import StaticIntTuple
+from collections import InlineArray
+from sys.ffi import external_call
 
 from .fstat import stat_result
 
@@ -29,7 +29,6 @@ alias blksize_t = Int64
 
 
 @value
-@register_passable("trivial")
 struct _c_stat(Stringable):
     var st_dev: dev_t  #  ID of device containing file
     var st_ino: Int64  # File serial number
@@ -46,28 +45,27 @@ struct _c_stat(Stringable):
     var st_mtimespec: _CTimeSpec  # time of last data modification
     var st_ctimespec: _CTimeSpec  # time of last status change
     var st_birthtimespec: _CTimeSpec  # time of file creation(birth)
-    var unused: StaticTuple[Int64, 3]  # RESERVED: DO NOT USE!
+    var unused: InlineArray[Int64, 3]  # RESERVED: DO NOT USE!
 
-    fn __init__() -> Self:
-        return Self {
-            st_dev: 0,
-            st_mode: 0,
-            st_nlink: 0,
-            st_ino: 0,
-            st_uid: 0,
-            st_gid: 0,
-            __pad0: 0,
-            st_rdev: 0,
-            st_size: 0,
-            st_blksize: 0,
-            st_blocks: 0,
-            st_atimespec: _CTimeSpec(),
-            st_mtimespec: _CTimeSpec(),
-            st_ctimespec: _CTimeSpec(),
-            st_birthtimespec: _CTimeSpec(),
-            unused: StaticTuple[Int64, 3](0, 0, 0),
-        }
+    fn __init__(inout self):
+        self.st_dev = 0
+        self.st_mode = 0
+        self.st_nlink = 0
+        self.st_ino = 0
+        self.st_uid = 0
+        self.st_gid = 0
+        self.__pad0 = 0
+        self.st_rdev = 0
+        self.st_size = 0
+        self.st_blksize = 0
+        self.st_blocks = 0
+        self.st_atimespec = _CTimeSpec()
+        self.st_mtimespec = _CTimeSpec()
+        self.st_ctimespec = _CTimeSpec()
+        self.st_birthtimespec = _CTimeSpec()
+        self.unused = InlineArray[Int64, 3](0, 0, 0)
 
+    @no_inline
     fn __str__(self) -> String:
         var res = String("{\n")
         res += "st_dev: " + str(self.st_dev) + ",\n"
@@ -110,7 +108,7 @@ struct _c_stat(Stringable):
 fn _stat(path: String) raises -> _c_stat:
     var stat = _c_stat()
     var err = external_call["__xstat", Int32](
-        Int32(0), path._as_ptr(), Pointer.address_of(stat)
+        Int32(0), path.unsafe_ptr(), Reference(stat)
     )
     if err == -1:
         raise "unable to stat '" + path + "'"
@@ -121,7 +119,7 @@ fn _stat(path: String) raises -> _c_stat:
 fn _lstat(path: String) raises -> _c_stat:
     var stat = _c_stat()
     var err = external_call["__lxstat", Int32](
-        Int32(0), path._as_ptr(), Pointer.address_of(stat)
+        Int32(0), path.unsafe_ptr(), Reference(stat)
     )
     if err == -1:
         raise "unable to lstat '" + path + "'"

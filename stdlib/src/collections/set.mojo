@@ -12,10 +12,16 @@
 # ===----------------------------------------------------------------------=== #
 """Implements the  Set datatype."""
 
-from .dict import Dict, KeyElement, _DictEntryIter, _DictKeyIter
+from .dict import (
+    Dict,
+    KeyElement,
+    _DictEntryIter,
+    _DictKeyIter,
+    RepresentableKeyElement,
+)
 
 
-struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
+struct Set[T: KeyElement](Sized, Comparable, Hashable, Boolable):
     """A set data type.
 
     O(1) average-case amortized add, remove, and membership check.
@@ -41,7 +47,12 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
         T: The element type of the set. Must implement KeyElement.
     """
 
+    # Fields
     var _data: Dict[T, NoneType]
+
+    # ===-------------------------------------------------------------------===#
+    # Life cycle methods
+    # ===-------------------------------------------------------------------===#
 
     fn __init__(inout self, *ts: T):
         """Construct a set from initial elements.
@@ -63,7 +74,7 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
         for e in elements:
             self.add(e[])
 
-    fn __init__(inout self, elements: List[T]):
+    fn __init__(inout self, elements: List[T, *_]):
         """Construct a set from a List of elements.
 
         Args:
@@ -79,7 +90,11 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
         Args:
             other: The existing Set instance to move from.
         """
-        self._data = other._data ^
+        self._data = other._data^
+
+    # ===-------------------------------------------------------------------===#
+    # Operator dunders
+    # ===-------------------------------------------------------------------===#
 
     fn __contains__(self, t: T) -> Bool:
         """Whether or not the set contains an element.
@@ -91,22 +106,6 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
             Whether or not the set contains the element.
         """
         return t in self._data
-
-    fn __bool__(self) -> Bool:
-        """Whether the set is non-empty or not.
-
-        Returns:
-            True if the set is non-empty, False if it is empty.
-        """
-        return len(self).__bool__()
-
-    fn __len__(self) -> Int:
-        """The size of the set.
-
-        Returns:
-            The number of elements in the set.
-        """
-        return len(self._data)
 
     fn __eq__(self, other: Self) -> Bool:
         """Set equality.
@@ -135,21 +134,6 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
         """
         return not (self == other)
 
-    fn __hash__(self) -> Int:
-        """A hash value of the elements in the set.
-
-        The hash value is order independent, so s1 == s2 -> hash(s1) == hash(s2).
-
-        Returns:
-            A hash value of the set suitable for non-cryptographic purposes.
-        """
-        var hash_value = 0
-        # Hash combination needs to be commutative so iteration order
-        # doesn't impact the hash value.
-        for e in self:
-            hash_value ^= hash(e[])
-        return hash_value
-
     fn __and__(self, other: Self) -> Self:
         """The set intersection operator.
 
@@ -171,9 +155,7 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
         Args:
             other: Another Set instance to intersect with this one.
         """
-        # Possible to do this without an extra allocation, but need to be
-        # careful about concurrent iteration + mutation
-        self.remove_all(self - other)
+        self.intersection_update(other)
 
     fn __or__(self, other: Self) -> Self:
         """The set union operator.
@@ -191,13 +173,12 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
         """In-place set union.
 
         Updates the set to contain all elements in the `other` set
-        as well as all elements it already contained.
+        as well as keeping all elements it already contained.
 
         Args:
             other: Another Set instance to union with this one.
         """
-        for e in other:
-            self.add(e[])
+        self.update(other)
 
     fn __sub__(self, other: Self) -> Self:
         """Set subtraction.
@@ -209,11 +190,7 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
             A new set containing elements of this set, but not containing
             any elements which were in the `other` set.
         """
-        var result = Set[T]()
-        for e in self:
-            if e[] not in other:
-                result.add(e[])
-        return result ^
+        return self.difference(other)
 
     fn __isub__(inout self, other: Self):
         """In-place set subtraction.
@@ -223,28 +200,169 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
         Args:
             other: Another Set instance to subtract from this one.
         """
-        self.remove_all(other)
+        self.difference_update(other)
 
-    fn __iter__[
-        mutability: __mlir_type.`i1`, self_life: AnyLifetime[mutability].type
-    ](
-        self: Reference[Self, mutability, self_life].mlir_ref_type,
-    ) -> _DictKeyIter[T, NoneType, mutability, self_life]:
+    fn __le__(self, other: Self) -> Bool:
+        """Overloads the <= operator for sets. Works like as `issubset` method.
+
+        Args:
+            other: Another Set instance to check against.
+
+        Returns:
+            True if this set is a subset of the `other` set, False otherwise.
+        """
+        return self.issubset(other)
+
+    fn __ge__(self, other: Self) -> Bool:
+        """Overloads the >= operator for sets. Works like as `issuperset` method.
+
+        Args:
+            other: Another Set instance to check against.
+
+        Returns:
+            True if this set is a superset of the `other` set, False otherwise.
+        """
+        return self.issuperset(other)
+
+    fn __gt__(self, other: Self) -> Bool:
+        """Overloads the > operator for strict superset comparison of sets.
+
+        Args:
+            other: The set to compare against for the strict superset relationship.
+
+        Returns:
+            True if the set is a strict superset of the `other` set, False otherwise.
+        """
+        return self >= other and self != other
+
+    fn __lt__(self, other: Self) -> Bool:
+        """Overloads the < operator for strict subset comparison of sets.
+
+        Args:
+            other: The set to compare against for the strict subset relationship.
+
+        Returns:
+            True if the set is a strict subset of the `other` set, False otherwise.
+        """
+        return self <= other and self != other
+
+    fn __xor__(self, other: Self) -> Self:
+        """Overloads the ^ operator for sets. Works like as `symmetric_difference` method.
+
+        Args:
+            other: The set to find the symmetric difference with.
+
+        Returns:
+            A new set containing the symmetric difference of the two sets.
+        """
+        return self.symmetric_difference(other)
+
+    fn __ixor__(inout self, other: Self):
+        """Overloads the ^= operator. Works like as `symmetric_difference_update` method.
+
+        Updates the set with the symmetric difference of itself and another set.
+
+        Args:
+            other: The set to find the symmetric difference with.
+        """
+        self.symmetric_difference_update(other)
+
+    # ===-------------------------------------------------------------------===#
+    # Trait implementations
+    # ===-------------------------------------------------------------------===#
+
+    fn __bool__(self) -> Bool:
+        """Whether the set is non-empty or not.
+
+        Returns:
+            True if the set is non-empty, False if it is empty.
+        """
+        return len(self).__bool__()
+
+    fn __len__(self) -> Int:
+        """The size of the set.
+
+        Returns:
+            The number of elements in the set.
+        """
+        return len(self._data)
+
+    fn __hash__(self) -> UInt:
+        """A hash value of the elements in the set.
+
+        The hash value is order independent, so s1 == s2 -> hash(s1) == hash(s2).
+
+        Returns:
+            A hash value of the set suitable for non-cryptographic purposes.
+        """
+        var hash_value = 0
+        # Hash combination needs to be commutative so iteration order
+        # doesn't impact the hash value.
+        for e in self:
+            hash_value ^= hash(e[])
+        return hash_value
+
+    @no_inline
+    fn __str__[U: RepresentableKeyElement](self: Set[U]) -> String:
+        """Returns the string representation of the set.
+
+        Parameters:
+            U: The type of the List elements. Must have the trait `RepresentableCollectionElement`.
+
+        Returns:
+            The string representation of the set.
+        """
+        var output = String()
+        var writer = output._unsafe_to_formatter()
+        self.format_to(writer)
+        return output
+
+    @no_inline
+    fn __repr__[U: RepresentableKeyElement](self: Set[U]) -> String:
+        """Returns the string representation of the set.
+
+        Parameters:
+            U: The type of the List elements. Must have the trait `RepresentableCollectionElement`.
+
+        Returns:
+            The string representation of the set.
+        """
+        return self.__str__()
+
+    fn format_to[
+        U: RepresentableKeyElement,
+    ](self: Set[U], inout writer: Formatter):
+        """Write Set string representation to a `Formatter`.
+
+        Parameters:
+            U: The type of the List elements. Must have the trait `RepresentableCollectionElement`.
+
+        Args:
+            writer: The formatter to write to.
+        """
+        writer.write("{")
+        var written = 0
+        for item in self:
+            writer.write(repr(item[]))
+            if written < len(self) - 1:
+                writer.write(", ")
+            written += 1
+        writer.write("}")
+
+    # ===-------------------------------------------------------------------===#
+    # Methods
+    # ===-------------------------------------------------------------------===#
+
+    fn __iter__(
+        ref [_]self: Self,
+    ) -> _DictKeyIter[T, NoneType, __lifetime_of(self._data)]:
         """Iterate over elements of the set, returning immutable references.
 
         Returns:
             An iterator of immutable references to the set elements.
         """
-        # self._data has its own lifetime that's not self_lifetime
         # here we rely on Set being a trivial wrapper of a Dict
-        return _DictKeyIter(
-            _DictEntryIter[
-                T,
-                NoneType,
-                mutability,
-                self_life,
-            ](0, 0, Reference(self).bitcast_element[Dict[T, NoneType]]())
-        )
+        return _DictKeyIter(_DictEntryIter(0, 0, self._data))
 
     fn add(inout self, t: T):
         """Add an element to the set.
@@ -299,7 +417,7 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
         for o in other:
             result.add(o[])
 
-        return result ^
+        return result^
 
     fn intersection(self, other: Self) -> Self:
         """Set intersection.
@@ -316,12 +434,54 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
             if v[] in other:
                 result.add(v[])
 
-        return result ^
+        return result^
 
-    fn remove_all(inout self, other: Self):
+    fn difference(self, other: Self) -> Self:
+        """Set difference.
+
+        Args:
+            other: Another Set instance to find the difference with this one.
+
+        Returns:
+            A new set containing elements that are in this set but not in
+            the `other` set.
+        """
+        var result = Set[T]()
+        for e in self:
+            if e[] not in other:
+                result.add(e[])
+        return result^
+
+    fn update(inout self, other: Self):
+        """In-place set update.
+
+        Updates the set to contain all elements in the `other` set
+        as well as keeping all elements it already contained.
+
+        Args:
+            other: Another Set instance to union with this one.
+        """
+        for e in other:
+            self.add(e[])
+
+    fn intersection_update(inout self, other: Self):
+        """In-place set intersection update.
+
+        Updates the set by retaining only elements found in both this set and the `other` set,
+        removing all other elements. The result is the intersection of this set with `other`.
+
+        Args:
+            other: Another Set instance to intersect with this one.
+        """
+        # Possible to do this without an extra allocation, but need to be
+        # careful about concurrent iteration + mutation
+        self.difference_update(self - other)
+
+    fn difference_update(inout self, other: Self):
         """In-place set subtraction.
 
-        Updates the set to remove any elements from the `other` set.
+        Updates the set by removing all elements found in the `other` set,
+        effectively keeping only elements that are unique to this set.
 
         Args:
             other: Another Set instance to subtract from this one.
@@ -331,3 +491,108 @@ struct Set[T: KeyElement](Sized, EqualityComparable, Hashable, Boolable):
                 self.remove(o[])
             except:
                 pass
+
+    fn issubset(self, other: Self) -> Bool:
+        """Check if this set is a subset of another set.
+
+        Args:
+            other: Another Set instance to check against.
+
+        Returns:
+            True if this set is a subset of the `other` set, False otherwise.
+        """
+        if len(self) > len(other):
+            return False
+
+        for element in self:
+            if element[] not in other:
+                return False
+
+        return True
+
+    fn isdisjoint(self, other: Self) -> Bool:
+        """Check if this set is disjoint with another set.
+
+        Args:
+            other: Another Set instance to check against.
+
+        Returns:
+            True if this set is disjoint with the `other` set, False otherwise.
+        """
+        for element in self:
+            if element[] in other:
+                return False
+
+        return True
+
+    fn issuperset(self, other: Self) -> Bool:
+        """Check if this set is a superset of another set.
+
+        Args:
+            other: Another Set instance to check against.
+
+        Returns:
+            True if this set is a superset of the `other` set, False otherwise.
+        """
+        if len(self) < len(other):
+            return False
+
+        for element in other:
+            if element[] not in self:
+                return False
+
+        return True
+
+    fn symmetric_difference(self, other: Self) -> Self:
+        """Returns the symmetric difference of two sets.
+
+        Args:
+            other: The set to find the symmetric difference with.
+
+        Returns:
+            A new set containing the symmetric difference of the two sets.
+        """
+        var result = Set[T]()
+
+        for element in self:
+            if element[] not in other:
+                result.add(element[])
+
+        for element in other:
+            if element[] not in self:
+                result.add(element[])
+
+        return result^
+
+    fn symmetric_difference_update(inout self, other: Self):
+        """Updates the set with the symmetric difference of itself and another set.
+
+        Args:
+            other: The set to find the symmetric difference with.
+        """
+        self = self.symmetric_difference(other)
+
+    fn discard(inout self, value: T):
+        """Remove a value from the set if it exists. Pass otherwise.
+
+        Args:
+            value: The element to remove from the set.
+        """
+        try:
+            self._data.pop(value)
+        except:
+            pass
+
+    fn clear(inout self) raises:
+        """Removes all elements from the set.
+
+        This method modifies the set in-place, removing all of its elements.
+        After calling this method, the set will be empty.
+        """
+        for _ in range(len(self)):
+            var a = self.pop()
+
+        #! This code below (without using range function) won't pass tests
+        #! It leaves set with one remaining item. Is this a bug?
+        # for _ in self:
+        #     var a = self.pop()

@@ -21,7 +21,7 @@ Also, before opening a new issue, take a moment to search through the already
 submitted issues to avoid creating duplicate issues for the maintainers to
 address.
 
-### Writing high-quality bugs
+### Writing high-quality bug descriptions
 
 We encourage you to provide as much information about the issue as practical.
 The more details you provide, the faster we can resolve the issue. The following
@@ -119,6 +119,8 @@ accepted. For example:
 
 - Changes that do not align with the published roadmap or the core principles of
   the standard library.
+- Changes to the math module until more thorough performance
+  benchmarking is available.
 - Code without tests—especially for core primitives.
 - Changes that break existing API or implicit behavior semantics.
 - Changes where the contributors’ favorite feature or system isn’t being used
@@ -131,6 +133,44 @@ accepted. For example:
 - Changes that need broad community consensus.
 - Changes if contributors are not responsive.
 - Adding an entire new module without going through the RFC/proposal process.
+
+### About pull request sizes
+
+We ask that contributors make pull requests as small as possible. When
+you are opening a pull request, check the number of lines modified in GitHub.
+The smaller the better (but don't exclude the tests or docstrings). If your
+pull request is over 100 lines, please try to split it into multiple pull
+requests. If you make them independent, it's even better as no synchronization
+will be needed for the merge.
+
+This guideline is here for the following reasons:
+
+- **Higher quality reviews**: It is much easier to spot a bug in a few lines
+than in 1000 lines.
+- **Faster overall review**: Reviewers, to approve a pull request, need to
+understand every line and understand how it fits into your overall change.
+They also need to go back and forth between files and functions to understand
+the flow of the code. This is exponentially hard as there are more lines in the code.
+- **Avoiding blocking changes that are valid**: In a huge pull request, it's
+likely that some changes are valid and some need to be reworked/discussed. If all
+the changes are in the same pull request, then the valid changes will be be blocked
+until all discussions have been resolved.
+- **Reducing the number of git conflicts**: Bigger pull request means slower reviews,
+thus means that the pull request will be open longer and will have more git conflicts
+to be resolved before being merged.
+- **Parallel processing**: All programmers like to parallelize. Well, reviewers also
+like to parallelize code reviews to merge your code faster. If you open two pull
+requests that are independent, then two reviewers will be able to work on your
+code.
+- **Finding the time for a code review**: Doing a code review often requires
+that the code is reviewed in one go, as it's hard to remember functions and code
+logic from one review session to another. Thus a big pull request will require
+the reviewer to allocate a big chunk of time to do the code review, which is not
+always possible and might delay the review and merge of your pull request
+for multiple days.
+
+Smaller pull requests means less work for the maintainers and faster reviews
+and merges for the contributors. It's a win-win!
 
 ### Proposals
 
@@ -157,7 +197,8 @@ experience with the process.
 
 You can use a pull request to propose a change or bug fix to the Mojo Standard
 Library, Mojo examples, or Mojo documentation. This page gives an overview of
-the process, especially for first-time contributors.
+the process. For a more detailed walkthrough, see
+[How to contribute to the Mojo standard library: a step-by-step guide](https://www.modular.com/blog/how-to-contribute-to-mojo-standard-library-a-step-by-step-guide).
 
 **Note:** Pull requests should be submitted against the `nightly` branch,
 which represents the most recent nightly build.
@@ -220,29 +261,29 @@ git rebase upstream/nightly
 #### Getting the nightly Mojo compiler
 
 Now that you're on the nightly branch, you need to install the latest nightly
-Mojo compiler:
+build.
+
+If you're using [`magic`](https://docs.modular.com/magic), create a new
+project environment with the `max-nightly` channel like this:
 
 ```bash
-curl https://get.modular.com | sh -
-
-modular auth
-
-modular install nightly/mojo
+magic init mojo-nightly --format mojoproject \
+  -c conda-forge -c https://conda.modular.com/max-nightly
 ```
 
-If you already have an older `nightly/mojo` compiler, replace
-`modular install nightly/mojo` with `modular update nightly/mojo`.
+If you're [using conda](https://docs.modular.com/magic/conda), add the
+`https://conda.modular.com/max-nightly` channel to your `environment.yaml`
+file. For example:
 
-Then, follow the instructions from the `modular` tool in adding the `mojo`
-compiler to your `PATH` such as:
+```yaml
+[project]
+name = "Mojo nightly example"
+channels = ["conda-forge", "https://conda.modular.com/max-nightly"]
+platforms = ["osx-arm64", "linux-aarch64", "linux-64"]
 
-```bash
-echo export MODULAR_HOME="$HOME/.modular" >> ~/.zshrc
-echo 'export PATH="$HOME/.modular/pkg/packages.modular.com_nightly_mojo/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+[dependencies]
+max = "*"
 ```
-
-If you're using bash, replace the three `~/.zshrc` above with `~/.bashrc`.
 
 #### Mojo nightly vscode extension
 

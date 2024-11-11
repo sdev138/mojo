@@ -3,6 +3,8 @@
 This page outlines the principles we aspire to follow and the more concrete
 objectives and goals we aim to accomplish in the Mojo standard library.
 
+For details about our near-term objectives, see the [Roadmap doc](roadmap.md).
+
 ## Principles
 
 The following are “North Star” principles for the Mojo standard library.
@@ -16,8 +18,7 @@ encouraged to engage with the standard library and language evolution. We
 intend to ignite enthusiasm to contribute to the expanding Mojo package
 ecosystem.
 
-- The standard library prioritizes
-  **Performance `>` Safety `>` Portability `>` Debuggability.**
+- The standard library prioritizes **Performance, Safety, Portability, and Debuggability.**
 
 - **Respectable performance by default.** The standard library should provide
 respectable performance by default, but not perfect performance. We support

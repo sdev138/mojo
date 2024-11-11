@@ -10,12 +10,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
-# RUN: %mojo -debug-level full %s
+# RUN: %mojo %s
 
 from collections.vector import InlinedFixedVector
 
 from test_utils import MoveCounter
-from testing import *
+from testing import assert_equal
 
 
 def test_inlined_fixed_vector():
@@ -109,6 +109,16 @@ def test_inlined_fixed_vector_with_default():
     vector._del_old()
 
 
+def test_indexing():
+    var vector = InlinedFixedVector[Int](10)
+    for i in range(5):
+        vector.append(i)
+    assert_equal(0, vector[int(0)])
+    assert_equal(1, vector[True])
+    assert_equal(2, vector[2])
+
+
 def main():
     test_inlined_fixed_vector()
     test_inlined_fixed_vector_with_default()
+    test_indexing()

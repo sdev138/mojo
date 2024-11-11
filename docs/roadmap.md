@@ -2,11 +2,6 @@
 title: Mojo🔥 roadmap & sharp edges
 sidebar_label: Roadmap & sharp edges
 description: A summary of our Mojo plans, including upcoming features and things we need to fix.
-website:
-  open-graph:
-    image: /static/images/mojo-social-card.png
-  twitter-card:
-    image: /static/images/mojo-social-card.png
 ---
 
 This document captures the broad plan about how we plan to implement things in
@@ -23,7 +18,7 @@ the long-term), so we want to fully build-out the core Mojo language features
 before we work on other dependent features and enhancements.
 
 Currently, that means we are focused on the core system programming features
-that are essential to [Mojo's mission](why-mojo.html), and as outlined in the
+that are essential to [Mojo's mission](/mojo/why-mojo), and as outlined in the
 following sections of this roadmap.
 
 In the near-term, we will **not** prioritize "general goodness" work such as:
@@ -38,7 +33,7 @@ If you have encountered any bugs with current Mojo behavior, please
 
 If you have ideas about how to improve the core Mojo features, we prefer that
 you first look for similar topics or start a new conversation about it
-in our [GitHub Discussions](https://github.com/modularml/mojo/discussions).
+on [Discord](https://discord.gg/modular).
 
 We also consider Mojo to be a new member of the Python family, so if you
 have suggestions to improve the experience with Python, we encourage
@@ -71,7 +66,7 @@ subsumed by more general features if time and care were given to broader
 evaluation.
 
 - Third, the Python community should tackle some of these ideas first. It is
-important to us that Mojo be a good member of the Python family (a "Python++"),
+important to us that Mojo be a good member of the Python family,
 not just a language with Pythonic syntax. As such, we don't want to needlessly
 diverge from Python evolution: adding a bunch of features could lead to
 problems down the road if Python makes incompatible decisions. Such a future
@@ -88,108 +83,6 @@ better equipped to evaluate these features, they have mature code bases to
 evaluate them with, and they have processes and infrastructure for making
 structured language evolution features.
 
-## Mojo SDK known issues
-
-The [Mojo SDK](/mojo/manual/get-started/) is still in early development
-and currently only available for Ubuntu Linux and macOS (Apple silicon)
-systems. Here are some of the notable issues that we plan to fix:
-
-- Missing native support for Windows, Intel Macs, and Linux distributions
-  other than Ubuntu. Currently, we support Ubuntu systems with x86-64
-  processors only. Support for more Linux distributions (including Debian
-  and RHEL) and Windows is in progress.
-
-- Python interoperability might fail when running a compiled Mojo program, with
-  the message
-  `Unable to locate a suitable libpython, please set MOJO_PYTHON_LIBRARY`. This
-  is because we currently do not embed the Python version into the Mojo binary.
-  For details and the workaround, see [issue
-  #551](https://github.com/modularml/mojo/issues/551).
-
-- Mojo programs that import NumPy might fail with the following error:
-
-  ```plaintext
-  Importing the numpy C-extensions failed. This error can happen for
-  many reasons, often due to issues with your setup or how NumPy was
-  installed.
-  ```
-
-  This may occur because the version of NumPy doesn't match the Python
-  interpreter Mojo is using. As a workaround, follow the instructions in
-  [issue #1085](https://github.com/modularml/mojo/issues/1085#issuecomment-1771403719)
-  to install a Python virtual environment using Conda. This can solve many
-  issues with Python interoperability.
-
-- Modular CLI install might fail and require `modular clean` before you
-  re-install.
-
-  If it asks you to perform auth, run `modular auth <MODULAR_AUTH>` and use the
-  `MODULAR_AUTH` value shown for the `curl` command on [the download
-  page](https://developer.modular.com/download).
-
-- `modular install mojo` is slow and might appear unresponsive (as the
-  installer is downloading packages in the background). We will add a progress
-  bar in a future release.
-
-- If you attempt to uninstall Mojo with `modular uninstall`, your subsequent
-  attempt to install Mojo might fail with an HTTP 500 error code. If so, run
-  `modular clean` and try again.
-
-- Mojo REPL might hang (become unresponsive for more than 10 seconds) when
-  interpreting an expression if your system has 4 GiB or less RAM. If you
-  encounter this issue, please report it with your system specs.
-
-Additionally, we're aware of some issues that we might not be able to solve,
-but we mention them here with some more information:
-
-- When installing Mojo, if you receive the error,
-  `failed to reach URL https://cas.modular.com`, it could be because your
-  network connection is behind a firewall. Try updating your firewall settings
-  to allow access to these end points: `https://packages.modular.com` and
-  `https://cas.modular.com`. Then retry with `modular clean` and
-  `modular install mojo`.
-
-- When installing Mojo, if you receive the error,
-  `gpg: no valid OpenGPG data found`, this is likely because you are located
-  outside our supported geographies. Due to US export control restrictions, we
-  are unable to provide access to Mojo to users situated in specific countries.
-
-- If using Windows Subsystem for Linux (WSL), you might face issues with WSL 1.
-  We recommend you upgrade to WSL 2. To check the version, run `wsl -l -v`. If
-  you're running WSL 1, refer to the
-  [WSL upgrade instructions](https://learn.microsoft.com/en-us/windows/wsl/install#upgrade-version-from-wsl-1-to-wsl-2).
-
-- When installing on macOS (Apple silicon), the Modular CLI install might fail
-  with the message:
-
-  ```plaintext
-  modular: The arm64 architecture is required for this software.
-  ```
-
-  This occurs because Apple's Rosetta x86 emulation is active. Check the
-  following:
-
-  - Right click on the terminal application you use (for example,
-    `Terminal.app`), click **Get Info**, and make sure the **Open in Rosetta**
-    checkbox is not selected.
-
-  - Run the following command:
-
-    ```bash
-    brew config | grep Rosetta
-    ```
-
-    If the output shows `Rosetta 2: True`, the x86 version of Homebrew is
-    installed.
-    [Uninstall and reinstall Homebrew](https://github.com/homebrew/install#uninstall-homebrew)
-    before retrying the Modular installation.
-
-    **Note:** Before uninstalling Homebrew, verify that you don't have other
-    projects specifically depending on the x86 version of Homebrew.
-
-You can see other [reported issues on
-GitHub](https://github.com/modularml/mojo/issues).
-
 ## Small independent features
 
 There are a number of features that are missing that are important to round out
@@ -197,15 +90,11 @@ the language fully, but which don't depend strongly on other features.  These
 include things like:
 
 - Improved package management support.
-- Many standard library features, including canonical arrays and dictionary
-  types, copy-on-write data structures, etc.
+- Many standard library features, including copy-on-write data structures.
 - Support for "top level code" at file scope.
 - Algebraic data types like `enum` in Swift/Rust, and pattern matching.
-- Many standard library types, including `Optional[T]` and `Result[T, Error]`
-  types when we have algebraic datatypes and basic traits.
-- Support for keyword-only arguments and variadic keyword arguments
-  (`**kwargs`).
-- Support for passing keyword arguments when calling Python functions.
+- Many standard library types need refinement, including `Optional[T]` and
+  `Result[T, Error]`.
 
 ## Ownership and Lifetimes
 
@@ -214,17 +103,16 @@ in the next couple of months.  The basic support for ownership includes features
 like:
 
 - Capture declarations in closures.
-- Borrow checker: complain about invalid mutable references.
+- Lifetime checker: complain about invalid mutable references.
 
-The next step in this is to bring proper lifetime support in.  This will add the
-ability to return references and store references in structures safely.  In the
-immediate future, one can use the unsafe `Pointer` struct to do this like in
-C++.
+Mojo has support for a safe `Reference` type, and it is used in the standard
+library, but it is still under active development and not very pretty or nice
+to use right now.
 
 ## Traits support
 
-As of v0.6.0 Mojo has basic support for
-[traits](/mojo/manual/traits.html#built-in-traits). Traits allow you
+Mojo has basic support for
+[traits](/mojo/manual/traits). Traits allow you
 to specify a set of requirements for types to implement. Types can implement
 those requirements to *conform to* the trait. Traits allow you to write
 generic functions and generic containers, which can work with any type that
@@ -235,18 +123,17 @@ Currently, the only kind of requirements supported by traits are required method
 signatures. The trait can't provide a default implementation for its required
 methods, so each conforming type must implement all of the required methods.
 
-A number of [built-in traits](/mojo/manual/traits.html#built-in-traits) are
+A number of [built-in traits](/mojo/manual/traits#built-in-traits) are
 already implemented in the standard library.
 
 We plan to expand traits support in future releases. Planned features include:
-
-- More traits built in to the standard library, and expanded use of traits
-  throughout the standard library.
 
 - Support for default implementations of required methods.
 
 - Support for a feature like Swift's extensions, allowing you to add a trait to
   a preexisting type.
+
+- Add support for conditional conformance.
 
 ## Classes
 
@@ -260,14 +147,12 @@ When we get here, we will discuss what the right default is: for example, is
 full Python hash-table dynamism the default? Or do we use a more efficient
 model by default (e.g. vtable-based dispatch and explicitly declared stored
 properties) and allow opt'ing into dynamism with a `@dynamic` decorator on the
-class. The latter approach worked well for Swift (its [`@objc`
-attribute](https://docs.swift.org/swift-book/documentation/the-swift-programming-language/attributes/#objc)),
-but we'll have to prototype to better understand the tradeoffs.
+class. More discussion is [in this proposal](https://github.com/modularml/mojo/blob/main/proposals/mojo-and-dynamism.md).
 
 ## C/C++ Interop
 
 Integration to transparently import Clang C/C++ modules.  Mojo's type system
-and C++'s are pretty compatible, so we should be able to have something pretty
+and C++'s are very compatible, so we should be able to have something pretty
 nice here. Mojo can leverage Clang to transparently generate a foreign function
 interface between C/C++ and Mojo, with the ability to directly import functions:
 
@@ -324,8 +209,7 @@ documented here.
 ### No list or dict comprehensions
 
 Mojo does not yet support Python list or dictionary comprehension expressions,
-like `[x for x in range(10)]`, because Mojo's standard library has not yet
-grown a standard list or dictionary type.
+like `[x for x in range(10)]`.
 
 ### No `lambda` syntax
 
@@ -423,9 +307,11 @@ fn generic_simd[nelts: Int](x: SIMD[DType.float32, nelts]):
 ### Scoping and mutability of statement variables
 
 Python programmers understand that local variables are implicitly declared and
-scoped at the function level. As the programming manual explains, this feature
-is supported in Mojo only inside `def` functions. However, there are some
-nuances to Python's implicit declaration rules that Mojo does not match 1-to-1.
+scoped at the function level. As the Mojo Manual explains, this is supported in
+Mojo for
+[implicitly-declared variables](/mojo/manual/variables#implicitly-declared-variables).
+However, there are some nuances to Python's implicit declaration rules that Mojo
+does not match 1-to-1.
 
 For example, the scope of `for` loop iteration variables and caught exceptions
 in `except` statements is limited to the next indentation block, for both `def`
@@ -442,7 +328,7 @@ This is because whether `i` is defined at this line is dynamic in Python. For
 instance the following Python program will fail:
 
 ```python
-for i range(0): pass
+for i in range(0): pass
 print(i)
 ```
 
@@ -451,29 +337,10 @@ dynamic characteristic of the function. Mojo's lifetime tracker is intentionally
 simple (so lifetimes are easy to use!), and cannot reason that `i` would be
 defined even when the loop bounds are constant.
 
-Also stated in the programming manual: in `def` functions, the function
-arguments are mutable and re-assignable, whereas in `fn`, function arguments are
-rvalues and cannot be re-assigned. The same logic extends to statement
-variables, like `for` loop iteration variables or caught exceptions:
-
-```mojo
-def foo():
-    try:
-        bad_function():
-    except e:
-        e = Error() # ok: we can overwrite 'e'
-
-fn bar():
-    try:
-        bad_function():
-    except e:
-        e = Error() # error: 'e' is not mutable
-```
-
 ### Name scoping of nested function declarations
 
 In Python, nested function declarations produce dynamic values. They are
-essentially syntax sugar for `bar = lambda ...`.
+essentially syntactic sugar for `bar = lambda ...`.
 
 ```python
 def foo():
@@ -543,70 +410,12 @@ class One:
 print(One()) # prints '1'
 ```
 
-Mojo currently supports this feature through the
-[`Stringable`](/mojo/stdlib/builtin/str.html#stringable) trait, so that
-`print()` works on all `Stringable` types. Similar support exists for the
-[`int()`](/mojo/stdlib/builtin/int.html#int-1) and
-[`len()`](/mojo/stdlib/builtin/len.html#len) functions. We'll continue to
+Mojo currently supports similar functionality through the
+[`Formattable`](/mojo/stdlib/utils/format/Formattable) trait, so that
+`print()` works on all `Formattable` types. Similar support exists for the
+[`int()`](/mojo/stdlib/builtin/int/int-function) and
+[`len()`](/mojo/stdlib/builtin/len/len) functions. We'll continue to
 add traits support to the standard library to enable common use cases like this.
-
-### Lifetime tracking inside collections
-
-With traits, it is now possible to build collection types like lists, maps, and
-sets that invoke element destructors. However, most standard library collection
-types haven't yet been extended to use traits.
-
-For collections of trivial types, like `Int`, this is no problem, but for
-collections of types with lifetimes, like `String`, the elements have to be
-manually destructed. Doing so requires quite an ugly pattern, shown in the next
-section.
-
-The `List` type has been updated to use traits, and invokes destructors
-properly.
-
-### No safe value references
-
-Mojo does not have proper lifetime marker support yet, and that means it cannot
-reason about returned references, so Mojo doesn't support them. You can return
-or keep unsafe references by passing explicit pointers around.
-
-```mojo
-struct StringRef:
-    var ref: Pointer[SI8]
-    var size: Int
-    # ...
-
-fn bar(x: StringRef): pass
-
-fn foo():
-    var s: String = "1234"
-    var ref: StringRef = s # unsafe reference
-    bar(ref)
-    _ = s # keep the backing memory alive!
-```
-
-Mojo will destruct objects as soon as it thinks it can. That means the lifetime
-of objects to which there are unsafe references must be manually extended. See
-the [Death of a value](/mojo/manual/lifecycle/death.html)
-for more details. This disables the RAII pattern in Mojo.  Context managers and
-`with` statements are your friends in Mojo.
-
-No lvalue returns also mean that implementing certain patterns require magic
-keywords until proper lifetime support is built. One such pattern is retrieving
-an unsafe reference from an object.
-
-```mojo
-struct UnsafeIntRef:
-    var ptr: Pointer[Int]
-
-fn printIntRef(x: UnsafeIntRef):
-    # "deference" operator
-    print(__get_address_as_lvalue(x.ptr)) # Pointer[Int] -> &Int
-
-var c: Int = 10
-# "reference" operator
-var ref = UnsafeIntRef(__get_lvalue_as_address(c)) # &Int -> Pointer[Int]
-```
 
 ### Parameter closure captures are unsafe references
 
@@ -678,15 +487,15 @@ fn call_it():
 ### The standard library has limited exceptions use
 
 For historic and performance reasons, core standard library types typically do
-not use exceptions. For instance, `DynamicVector` will not raise an
+not use exceptions. For instance, `List` will not raise an
 out-of-bounds access (it will crash), and `Int` does not throw on divide by
 zero. In other words, most standard library types are considered "unsafe".
 
 ```mojo
-var v = DynamicVector[Int](capacity=0)
-print(v[1]) # could crash or print garbage values (undefined behaviour)
+var l = List[Int](capacity=0)
+print(l[1]) # could crash or print garbage values (undefined behavior)
 
-print(1//0) # does not raise and could print anything (undefined behaviour)
+print(1//0) # does not raise and could print anything (undefined behavior)
 ```
 
 This is clearly unacceptable given the strong memory safety goals of Mojo. We
@@ -718,28 +527,6 @@ The upstream dialects available in the Playground are the
 [`index`](https://mlir.llvm.org/docs/Dialects/IndexOps/) dialect and the
 [`LLVM`](https://mlir.llvm.org/docs/Dialects/LLVM/) dialect.
 
-### `@value` is limited with trait conformance check
-
-Structs with `@value` decorator still need to explicitly provide dundner
-methods such as `__init__`, `__copyinit__`, and `__moveinit__` when
-both of the following are true:
-
-- The struct has one or more fields that are self referencing
-  (such as `Pointer[Self]`).
-- The struct declares conformance to a trait that requires these dunder
-  methods.
-
-```mojo
-# test.mojo
-@value
-struct A(CollectionElement):
-    # error: 'DynamicVector' parameter #0 has 'CollectionElement' type, but value has type 'A'
-    var a: DynamicVector[Self]
-```
-
-In the example above, adding the `__moveinit__()` and `__copyinit__()` methods
-required by `CollectionElement` resolves this error.
-
 ### `or` expression is statically typed
 
 Because Mojo has static typing, the `or` expression can't currently mimic the
@@ -755,7 +542,7 @@ print(type(i or s)) # prints <class 'int'>
 ```
 
 In Mojo, given the expression `(a or b)`, the compiler needs to statically
-determine a result type that the types of `a` and `b` can both be converted to.
+determine a result type that the types of `a` and `b` can both be **converted** to.
 
 For example, currently an `Int` can be implicitly converted to a `String`, but a
 `String` can't be implicitly converted to an `Int`. So given an integer value

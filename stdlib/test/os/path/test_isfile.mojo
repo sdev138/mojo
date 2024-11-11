@@ -10,12 +10,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
-# RUN: %mojo -debug-level full %s
+# RUN: %mojo %s
 
 from os.path import isfile
 from pathlib import Path
 
-from testing import *
+from builtin._location import __source_location
+from testing import assert_false, assert_true
 
 
 def main():

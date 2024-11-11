@@ -14,50 +14,59 @@
 
 from collections import List
 
-from memory._arc import Arc
-from testing import *
+from memory import Arc
+from testing import assert_equal, assert_false, assert_true
 
 
 def test_basic():
     var p = Arc(4)
     var p2 = p
-    p2.set(3)
+    p2[] = 3
     assert_equal(3, p[])
 
 
 @value
 struct ObservableDel(CollectionElement):
-    var target: Pointer[Bool]
+    var target: UnsafePointer[Bool]
+
+    fn __init__(inout self, *, other: Self):
+        self = other
 
     fn __del__(owned self):
-        self.target.store(True)
+        self.target.init_pointee_move(True)
 
 
 def test_deleter_not_called_until_no_references():
     var deleted = False
-    var p = Arc(ObservableDel(Pointer.address_of(deleted)))
+    var p = Arc(ObservableDel(UnsafePointer.address_of(deleted)))
     var p2 = p
-    _ = p ^
+    _ = p^
     assert_false(deleted)
 
     var vec = List[Arc[ObservableDel]]()
     vec.append(p2)
-    _ = p2 ^
+    _ = p2^
     assert_false(deleted)
-    _ = vec ^
+    _ = vec^
     assert_true(deleted)
 
 
-def test_arc_bitcast():
-    var arc_f32 = Arc[Scalar[DType.float32]](16.0)
+def test_deleter_not_called_until_no_references_explicit_copy():
+    var deleted = False
+    var p = Arc(ObservableDel(UnsafePointer.address_of(deleted)))
+    var p2 = Arc(other=p)
+    _ = p^
+    assert_false(deleted)
 
-    var arc_i32 = arc_f32._bitcast[Scalar[DType.int32]]()
-
-    assert_equal(arc_f32[], 16.0)
-    assert_equal(arc_i32[], 1098907648)
+    var vec = List[Arc[ObservableDel]]()
+    vec.append(Arc(other=p2)^)
+    _ = p2^
+    assert_false(deleted)
+    _ = vec^
+    assert_true(deleted)
 
 
 def main():
     test_basic()
     test_deleter_not_called_until_no_references()
-    test_arc_bitcast()
+    test_deleter_not_called_until_no_references_explicit_copy()

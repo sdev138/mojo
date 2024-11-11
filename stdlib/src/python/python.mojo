@@ -19,25 +19,26 @@ from python import Python
 ```
 """
 
-from sys import external_call
+from collections import Dict
+from os.env import getenv
+from sys import external_call, sizeof
 from sys.ffi import _get_global
-from sys.info import sizeof
 
-from memory.unsafe import Pointer
+from memory import UnsafePointer
 
 from utils import StringRef
 
-from ._cpython import CPython, Py_eval_input
-from .object import PythonObject
+from ._cpython import CPython, Py_eval_input, Py_file_input
+from .python_object import PythonObject
 
 
-fn _init_global(ignored: Pointer[NoneType]) -> Pointer[NoneType]:
-    var ptr = Pointer[CPython].alloc(1)
+fn _init_global(ignored: UnsafePointer[NoneType]) -> UnsafePointer[NoneType]:
+    var ptr = UnsafePointer[CPython].alloc(1)
     ptr[] = CPython()
     return ptr.bitcast[NoneType]()
 
 
-fn _destroy_global(python: Pointer[NoneType]):
+fn _destroy_global(python: UnsafePointer[NoneType]):
     var p = python.bitcast[CPython]()
     CPython.destroy(p[])
     python.free()
@@ -50,9 +51,9 @@ fn _get_global_python_itf() -> _PythonInterfaceImpl:
 
 
 struct _PythonInterfaceImpl:
-    var _cpython: Pointer[CPython]
+    var _cpython: UnsafePointer[CPython]
 
-    fn __init__(inout self, cpython: Pointer[CPython]):
+    fn __init__(inout self, cpython: UnsafePointer[CPython]):
         self._cpython = cpython
 
     fn __copyinit__(inout self, existing: Self):
@@ -94,28 +95,62 @@ struct Python:
         return cpython.PyRun_SimpleString(code)
 
     @staticmethod
-    fn evaluate(expr: StringRef) raises -> PythonObject:
+    fn evaluate(
+        expr: StringRef, file: Bool = False, name: StringRef = "__main__"
+    ) raises -> PythonObject:
         """Executes the given Python code.
 
         Args:
             expr: The Python expression to evaluate.
+            file: Evaluate as a file and return the module.
+            name: The name of the module (most relevant if `file` is True).
 
         Returns:
             `PythonObject` containing the result of the evaluation.
         """
         var cpython = _get_global_python_itf().cpython()
-        var module = PythonObject(cpython.PyImport_AddModule("__main__"))
+        var module = PythonObject(cpython.PyImport_AddModule(name))
         # PyImport_AddModule returns a borrowed reference - IncRef it to keep it alive.
         cpython.Py_IncRef(module.py_object)
         var dict_obj = PythonObject(cpython.PyModule_GetDict(module.py_object))
         # PyModule_GetDict returns a borrowed reference - IncRef it to keep it alive.
         cpython.Py_IncRef(dict_obj.py_object)
-        var result = cpython.PyRun_String(
-            expr, dict_obj.py_object, dict_obj.py_object, Py_eval_input
-        )
-        # We no longer need module and dictionary, release them.
-        Python.throw_python_exception_if_error_state(cpython)
-        return PythonObject(result)
+        if file:
+            # We compile the code as provided and execute in the module
+            # context. Note that this may be an existing module if the provided
+            # module name is not unique. The name here is used only for this
+            # code object, not the module itself.
+            #
+            # The Py_file_input is the code passed to the parsed to indicate
+            # the initial state: this is essentially whether it is expecting
+            # to compile an expression, a file or statements (e.g. repl).
+            var code = PythonObject(
+                cpython.Py_CompileString(expr, "<evaluate>", Py_file_input)
+            )
+            # For this evaluation, we pass the dictionary both as the globals
+            # and the locals. This is because the globals is defined as the
+            # dictionary for the module scope, and locals is defined as the
+            # dictionary for the *current* scope. Since we are executing at
+            # the module scope for this eval, they should be the same object.
+            var result = PythonObject(
+                cpython.PyEval_EvalCode(
+                    code.py_object, dict_obj.py_object, dict_obj.py_object
+                )
+            )
+            Python.throw_python_exception_if_error_state(cpython)
+            _ = code^
+            _ = result^
+            return module
+        else:
+            # We use the result of evaluating the expression directly, and allow
+            # all the globals/locals to be discarded. See above re: why the same
+            # dictionary is being used here for both globals and locals.
+            var result = cpython.PyRun_String(
+                expr, dict_obj.py_object, dict_obj.py_object, Py_eval_input
+            )
+            # We no longer need module and dictionary, release them.
+            Python.throw_python_exception_if_error_state(cpython)
+            return PythonObject(result)
 
     @staticmethod
     fn add_to_path(dir_path: String) raises:
@@ -166,14 +201,36 @@ struct Python:
             The Python module.
         """
         var cpython = _get_global_python_itf().cpython()
+        # Throw error if it occurred during initialization
+        cpython.check_init_error()
         var module_maybe = cpython.PyImport_ImportModule(module)
         Python.throw_python_exception_if_error_state(cpython)
         return PythonObject(module_maybe)
 
+    @staticmethod
+    fn dict() -> PythonObject:
+        """Construct an empty Python dictionary.
+
+        Returns:
+            The constructed empty Python dictionary.
+        """
+        return PythonObject(Dict[PythonObject, PythonObject]())
+
+    @staticmethod
+    fn list() -> PythonObject:
+        """Construct an empty Python list.
+
+        Returns:
+            The constructed empty Python list.
+        """
+        return PythonObject([])
+
+    @no_inline
     fn __str__(inout self, str_obj: PythonObject) -> StringRef:
         """Return a string representing the given Python object.
 
-        This function allows to convert Python objects to Mojo string type.
+        Args:
+            str_obj: The Python object.
 
         Returns:
             Mojo string representing the given Python object.
@@ -189,12 +246,9 @@ struct Python:
             cpython: The cpython instance we wish to error check.
         """
         if cpython.PyErr_Occurred():
-            var error = PythonObject(cpython.PyErr_Fetch()).__getattr__(
-                "__str__"
-            )()
-            var err: Error = cpython.PyUnicode_AsUTF8AndSize(error.py_object)
+            var error: Error = str(PythonObject(cpython.PyErr_Fetch()))
             cpython.PyErr_Clear()
-            raise err
+            raise error
 
     @staticmethod
     fn is_type(x: PythonObject, y: PythonObject) -> Bool:
@@ -231,7 +285,4 @@ struct Python:
         Returns:
             `PythonObject` representing `None`.
         """
-        var cpython = _get_global_python_itf().cpython()
-        var none = cpython.Py_None()
-        cpython.Py_IncRef(none)
-        return PythonObject(none)
+        return PythonObject(None)

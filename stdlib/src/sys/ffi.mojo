@@ -12,12 +12,17 @@
 # ===----------------------------------------------------------------------=== #
 """Implements a foreign functions interface (FFI)."""
 
-from memory.unsafe import DTypePointer, Pointer
+from os import abort
+from memory import UnsafePointer
 
 from utils import StringRef
 
 from .info import os_is_linux, os_is_windows
 from .intrinsics import _mlirtype_is_eq
+from builtin.builtin_list import _LITRefPackHelper
+
+alias C_char = Int8
+"""C `char` type."""
 
 
 struct RTLD:
@@ -40,39 +45,70 @@ alias DEFAULT_RTLD = RTLD.NOW | RTLD.GLOBAL
 
 
 @value
-@register_passable
-struct DLHandle(CollectionElement):
+@register_passable("trivial")
+struct DLHandle(CollectionElement, CollectionElementNew, Boolable):
     """Represents a dynamically linked library that can be loaded and unloaded.
 
-    The library is loaded on initialization and unloaded on deletion of the object.
+    The library is loaded on initialization and unloaded by `close`.
     """
 
-    var handle: DTypePointer[DType.int8]
+    var handle: UnsafePointer[Int8]
     """The handle to the dynamic library."""
 
     # TODO(#15590): Implement support for windows and remove the always_inline.
     @always_inline
-    fn __init__(path: String, flags: Int = DEFAULT_RTLD) -> Self:
+    fn __init__(inout self, path: String, flags: Int = DEFAULT_RTLD):
         """Initialize a DLHandle object by loading the dynamic library at the
         given path.
 
         Args:
             path: The path to the dynamic library file.
             flags: The flags to load the dynamic library.
-
-        Returns:
-            The constructed handle object.
         """
 
         @parameter
         if not os_is_windows():
-            return Self {
-                handle: external_call["dlopen", DTypePointer[DType.int8]](
-                    path._as_ptr(), flags
-                )
-            }
+            var handle = external_call["dlopen", UnsafePointer[Int8]](
+                path.unsafe_cstr_ptr(), flags
+            )
+            if handle == UnsafePointer[Int8]():
+                var error_message = external_call[
+                    "dlerror", UnsafePointer[UInt8]
+                ]()
+                abort("dlopen failed: " + String(error_message))
+            self.handle = handle
         else:
-            return Self {handle: DTypePointer[DType.int8]()}
+            self.handle = UnsafePointer[Int8]()
+
+    fn __init__(inout self, *, other: Self):
+        """Copy the object.
+
+        Args:
+            other: The value to copy.
+        """
+        self = other
+
+    fn check_symbol(self, name: String) -> Bool:
+        """Check that the symbol exists in the dynamic library.
+
+        Args:
+            name: The symbol to check.
+
+        Returns:
+            `True` if the symbol exists.
+        """
+        constrained[
+            not os_is_windows(),
+            "Checking dynamic library symbol is not supported on Windows",
+        ]()
+
+        var opaque_function_ptr = external_call["dlsym", UnsafePointer[Int8]](
+            self.handle.address, name.unsafe_cstr_ptr()
+        )
+        if opaque_function_ptr:
+            return True
+
+        return False
 
     # TODO(#15590): Implement support for windows and remove the always_inline.
     @always_inline
@@ -83,11 +119,21 @@ struct DLHandle(CollectionElement):
         @parameter
         if not os_is_windows():
             _ = external_call["dlclose", Int](self.handle)
-            self.handle = DTypePointer[DType.int8].get_null()
+            self.handle = UnsafePointer[Int8]()
+
+    fn __bool__(self) -> Bool:
+        """Checks if the handle is valid.
+
+        Returns:
+          True if the DLHandle is not null and False otherwise.
+        """
+        return self.handle.__bool__()
 
     # TODO(#15590): Implement support for windows and remove the always_inline.
     @always_inline
-    fn get_function[result_type: AnyRegType](self, name: String) -> result_type:
+    fn get_function[
+        result_type: AnyTrivialRegType
+    ](self, name: String) -> result_type:
         """Returns a handle to the function with the given name in the dynamic
         library.
 
@@ -101,12 +147,12 @@ struct DLHandle(CollectionElement):
             A handle to the function.
         """
 
-        return self._get_function[result_type](name._as_ptr())
+        return self._get_function[result_type](name.unsafe_cstr_ptr())
 
     @always_inline
     fn _get_function[
-        result_type: AnyRegType
-    ](self, name: DTypePointer[DType.int8]) -> result_type:
+        result_type: AnyTrivialRegType
+    ](self, name: UnsafePointer[C_char]) -> result_type:
         """Returns a handle to the function with the given name in the dynamic
         library.
 
@@ -119,23 +165,24 @@ struct DLHandle(CollectionElement):
         Returns:
             A handle to the function.
         """
+        debug_assert(self.handle, "Dylib handle is null")
 
         @parameter
         if not os_is_windows():
             var opaque_function_ptr = external_call[
-                "dlsym", DTypePointer[DType.int8]
+                "dlsym", UnsafePointer[Int8]
             ](self.handle.address, name)
-            return (
-                Pointer(__get_lvalue_as_address(opaque_function_ptr))
-                .bitcast[result_type]()
-                .load()
-            )
+            var result = UnsafePointer.address_of(opaque_function_ptr).bitcast[
+                result_type
+            ]()[]
+            _ = opaque_function_ptr
+            return result
         else:
-            return Pointer[result_type].get_null().load()
+            return abort[result_type]("get_function isn't supported on windows")
 
     @always_inline
     fn _get_function[
-        func_name: StringLiteral, result_type: AnyRegType
+        func_name: StringLiteral, result_type: AnyTrivialRegType
     ](self) -> result_type:
         """Returns a handle to the function with the given name in the dynamic
         library.
@@ -148,7 +195,7 @@ struct DLHandle(CollectionElement):
             A handle to the function.
         """
 
-        return self._get_function[result_type](func_name.data())
+        return self._get_function[result_type](func_name.unsafe_cstr_ptr())
 
 
 # ===----------------------------------------------------------------------===#
@@ -159,27 +206,29 @@ struct DLHandle(CollectionElement):
 @always_inline
 fn _get_global[
     name: StringLiteral,
-    init_fn: fn (Pointer[NoneType]) -> Pointer[NoneType],
-    destroy_fn: fn (Pointer[NoneType]) -> None,
-](payload: Pointer[NoneType] = Pointer[NoneType]()) -> Pointer[NoneType]:
+    init_fn: fn (UnsafePointer[NoneType]) -> UnsafePointer[NoneType],
+    destroy_fn: fn (UnsafePointer[NoneType]) -> None,
+](
+    payload: UnsafePointer[NoneType] = UnsafePointer[NoneType]()
+) -> UnsafePointer[NoneType]:
     return external_call[
-        "KGEN_CompilerRT_GetGlobalOrCreate", Pointer[NoneType]
+        "KGEN_CompilerRT_GetGlobalOrCreate", UnsafePointer[NoneType]
     ](StringRef(name), payload, init_fn, destroy_fn)
 
 
 @always_inline
-fn _get_global_or_null[name: StringLiteral]() -> Pointer[NoneType]:
-    return external_call["KGEN_CompilerRT_GetGlobalOrNull", Pointer[NoneType]](
-        StringRef(name)
-    )
+fn _get_global_or_null[name: StringLiteral]() -> UnsafePointer[NoneType]:
+    return external_call[
+        "KGEN_CompilerRT_GetGlobalOrNull", UnsafePointer[NoneType]
+    ](name.unsafe_ptr(), name.byte_length())
 
 
 @always_inline
 fn _get_dylib[
     name: StringLiteral,
-    init_fn: fn (Pointer[NoneType]) -> Pointer[NoneType],
-    destroy_fn: fn (Pointer[NoneType]) -> None,
-](payload: Pointer[NoneType] = Pointer[NoneType]()) -> DLHandle:
+    init_fn: fn (UnsafePointer[NoneType]) -> UnsafePointer[NoneType],
+    destroy_fn: fn (UnsafePointer[NoneType]) -> None,
+](payload: UnsafePointer[NoneType] = UnsafePointer[NoneType]()) -> DLHandle:
     var ptr = _get_global[name, init_fn, destroy_fn](payload).bitcast[
         DLHandle
     ]()
@@ -190,26 +239,22 @@ fn _get_dylib[
 fn _get_dylib_function[
     name: StringLiteral,
     func_name: StringLiteral,
-    init_fn: fn (Pointer[NoneType]) -> Pointer[NoneType],
-    destroy_fn: fn (Pointer[NoneType]) -> None,
-    result_type: AnyRegType,
-](payload: Pointer[NoneType] = Pointer[NoneType]()) -> result_type:
+    init_fn: fn (UnsafePointer[NoneType]) -> UnsafePointer[NoneType],
+    destroy_fn: fn (UnsafePointer[NoneType]) -> None,
+    result_type: AnyTrivialRegType,
+](payload: UnsafePointer[NoneType] = UnsafePointer[NoneType]()) -> result_type:
     alias func_cache_name = name + "/" + func_name
     var func_ptr = _get_global_or_null[func_cache_name]()
     if func_ptr:
-        return (
-            Pointer(__get_lvalue_as_address(func_ptr))
-            .bitcast[result_type]()
-            .load()
-        )
+        var result = UnsafePointer.address_of(func_ptr).bitcast[result_type]()[]
+        _ = func_ptr
+        return result
 
     var dylib = _get_dylib[name, init_fn, destroy_fn](payload)
     var new_func = dylib._get_function[func_name, result_type]()
     external_call["KGEN_CompilerRT_InsertGlobal", NoneType](
         StringRef(func_cache_name),
-        Pointer(__get_lvalue_as_address(new_func))
-        .bitcast[Pointer[NoneType]]()
-        .load(),
+        UnsafePointer.address_of(new_func).bitcast[UnsafePointer[NoneType]]()[],
     )
 
     return new_func
@@ -221,205 +266,37 @@ fn _get_dylib_function[
 
 
 @always_inline("nodebug")
-fn external_call[callee: StringLiteral, type: AnyRegType]() -> type:
-    """Calls an external function.
-
-    Parameters:
-      callee: The name of the external function.
-      type: The return type.
-
-    Returns:
-      The external call result.
-    """
-
-    @parameter
-    if _mlirtype_is_eq[type, NoneType]():
-        __mlir_op.`pop.external_call`[func = callee.value, _type=None]()
-        return rebind[type](None)
-    else:
-        return __mlir_op.`pop.external_call`[func = callee.value, _type=type]()
-
-
-@always_inline("nodebug")
 fn external_call[
-    callee: StringLiteral, type: AnyRegType, T0: AnyRegType
-](arg0: T0) -> type:
+    callee: StringLiteral, type: AnyTrivialRegType, *types: AnyType
+](*arguments: *types) -> type:
     """Calls an external function.
-
-    Parameters:
-      callee: The name of the external function.
-      type: The return type.
-      T0: The first argument type.
 
     Args:
-      arg0: The first argument.
-
-    Returns:
-      The external call result.
-    """
-
-    @parameter
-    if _mlirtype_is_eq[type, NoneType]():
-        __mlir_op.`pop.external_call`[func = callee.value, _type=None](arg0)
-        return rebind[type](None)
-    else:
-        return __mlir_op.`pop.external_call`[func = callee.value, _type=type](
-            arg0
-        )
-
-
-@always_inline("nodebug")
-fn external_call[
-    callee: StringLiteral, type: AnyRegType, T0: AnyRegType, T1: AnyRegType
-](arg0: T0, arg1: T1) -> type:
-    """Calls an external function.
+      arguments: The arguments to pass to the external function.
 
     Parameters:
       callee: The name of the external function.
       type: The return type.
-      T0: The first argument type.
-      T1: The second argument type.
-
-    Args:
-      arg0: The first argument.
-      arg1: The second argument.
+      types: The argument types.
 
     Returns:
       The external call result.
     """
+
+    # The argument pack will contain references for each value in the pack,
+    # but we want to pass their values directly into the C printf call. Load
+    # all the members of the pack.
+    var loaded_pack = _LITRefPackHelper(arguments._value).get_loaded_kgen_pack()
 
     @parameter
     if _mlirtype_is_eq[type, NoneType]():
         __mlir_op.`pop.external_call`[func = callee.value, _type=None](
-            arg0, arg1
+            loaded_pack
         )
         return rebind[type](None)
     else:
         return __mlir_op.`pop.external_call`[func = callee.value, _type=type](
-            arg0, arg1
-        )
-
-
-@always_inline("nodebug")
-fn external_call[
-    callee: StringLiteral,
-    type: AnyRegType,
-    T0: AnyRegType,
-    T1: AnyRegType,
-    T2: AnyRegType,
-](arg0: T0, arg1: T1, arg2: T2) -> type:
-    """Calls an external function.
-
-    Parameters:
-      callee: The name of the external function.
-      type: The return type.
-      T0: The first argument type.
-      T1: The second argument type.
-      T2: The third argument type.
-
-    Args:
-      arg0: The first argument.
-      arg1: The second argument.
-      arg2: The third argument.
-
-    Returns:
-      The external call result.
-    """
-
-    @parameter
-    if _mlirtype_is_eq[type, NoneType]():
-        __mlir_op.`pop.external_call`[func = callee.value, _type=None](
-            arg0, arg1, arg2
-        )
-        return rebind[type](None)
-    else:
-        return __mlir_op.`pop.external_call`[func = callee.value, _type=type](
-            arg0, arg1, arg2
-        )
-
-
-@always_inline("nodebug")
-fn external_call[
-    callee: StringLiteral,
-    type: AnyRegType,
-    T0: AnyRegType,
-    T1: AnyRegType,
-    T2: AnyRegType,
-    T3: AnyRegType,
-](arg0: T0, arg1: T1, arg2: T2, arg3: T3) -> type:
-    """Calls an external function.
-
-    Parameters:
-      callee: The name of the external function.
-      type: The return type.
-      T0: The first argument type.
-      T1: The second argument type.
-      T2: The third argument type.
-      T3: The fourth argument type.
-
-    Args:
-      arg0: The first argument.
-      arg1: The second argument.
-      arg2: The third argument.
-      arg3: The fourth argument.
-
-    Returns:
-      The external call result.
-    """
-
-    @parameter
-    if _mlirtype_is_eq[type, NoneType]():
-        __mlir_op.`pop.external_call`[func = callee.value, _type=None](
-            arg0, arg1, arg2, arg3
-        )
-        return rebind[type](None)
-    else:
-        return __mlir_op.`pop.external_call`[func = callee.value, _type=type](
-            arg0, arg1, arg2, arg3
-        )
-
-
-@always_inline("nodebug")
-fn external_call[
-    callee: StringLiteral,
-    type: AnyRegType,
-    T0: AnyRegType,
-    T1: AnyRegType,
-    T2: AnyRegType,
-    T3: AnyRegType,
-    T4: AnyRegType,
-](arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4) -> type:
-    """Calls an external function.
-
-    Parameters:
-      callee: The name of the external function.
-      type: The return type.
-      T0: The first argument type.
-      T1: The second argument type.
-      T2: The third argument type.
-      T3: The fourth argument type.
-      T4: The fifth argument type.
-
-    Args:
-      arg0: The first argument.
-      arg1: The second argument.
-      arg2: The third argument.
-      arg3: The fourth argument.
-      arg4: The fifth argument.
-
-    Returns:
-      The external call result.
-    """
-
-    @parameter
-    if _mlirtype_is_eq[type, NoneType]():
-        __mlir_op.`pop.external_call`[func = callee.value, _type=None](
-            arg0, arg1, arg2, arg3, arg4
-        )
-        return rebind[type](None)
-    else:
-        return __mlir_op.`pop.external_call`[func = callee.value, _type=type](
-            arg0, arg1, arg2, arg3, arg4
+            loaded_pack
         )
 
 
@@ -429,84 +306,30 @@ fn external_call[
 
 
 @always_inline("nodebug")
-fn _external_call_const[callee: StringLiteral, type: AnyRegType]() -> type:
-    """Mark the external function call as having no observable effects to the
-    program state. This allows the compiler to optimize away successive calls
-    to the same function.
-
-    Parameters:
-      callee: The name of the external function.
-      type: The return type.
-
-    Returns:
-      The external call result.
-    """
-    return __mlir_op.`pop.external_call`[
-        func = callee.value,
-        resAttrs = __mlir_attr.`[{llvm.noundef}]`,
-        funcAttrs = __mlir_attr.`["willreturn"]`,
-        memory = __mlir_attr[
-            `#llvm.memory_effects<other = none, `,
-            `argMem = none, `,
-            `inaccessibleMem = none>`,
-        ],
-        _type=type,
-    ]()
-
-
-@always_inline("nodebug")
 fn _external_call_const[
-    callee: StringLiteral, type: AnyRegType, T0: AnyRegType
-](arg0: T0) -> type:
+    callee: StringLiteral, type: AnyTrivialRegType, *types: AnyType
+](*arguments: *types) -> type:
     """Mark the external function call as having no observable effects to the
     program state. This allows the compiler to optimize away successive calls
     to the same function.
-
-    Parameters:
-      callee: The name of the external function.
-      type: The return type.
-      T0: The first argument type.
 
     Args:
-      arg0: The first argument.
-
-    Returns:
-      The external call result.
-    """
-    return __mlir_op.`pop.external_call`[
-        func = callee.value,
-        resAttrs = __mlir_attr.`[{llvm.noundef}]`,
-        funcAttrs = __mlir_attr.`["willreturn"]`,
-        memory = __mlir_attr[
-            `#llvm.memory_effects<other = none, `,
-            `argMem = none, `,
-            `inaccessibleMem = none>`,
-        ],
-        _type=type,
-    ](arg0)
-
-
-@always_inline("nodebug")
-fn _external_call_const[
-    callee: StringLiteral, type: AnyRegType, T0: AnyRegType, T1: AnyRegType
-](arg0: T0, arg1: T1) -> type:
-    """Mark the external function call as having no observable effects to the
-    program state. This allows the compiler to optimize away successive calls
-    to the same function.
+      arguments: The arguments to pass to the external function.
 
     Parameters:
       callee: The name of the external function.
       type: The return type.
-      T0: The first argument type.
-      T1: The second argument type.
-
-    Args:
-      arg0: The first argument.
-      arg1: The second argument.
+      types: The argument types.
 
     Returns:
       The external call result.
     """
+
+    # The argument pack will contain references for each value in the pack,
+    # but we want to pass their values directly into the C printf call. Load
+    # all the members of the pack.
+    var loaded_pack = _LITRefPackHelper(arguments._value).get_loaded_kgen_pack()
+
     return __mlir_op.`pop.external_call`[
         func = callee.value,
         resAttrs = __mlir_attr.`[{llvm.noundef}]`,
@@ -517,4 +340,4 @@ fn _external_call_const[
             `inaccessibleMem = none>`,
         ],
         _type=type,
-    ](arg0, arg1)
+    ](loaded_pack)

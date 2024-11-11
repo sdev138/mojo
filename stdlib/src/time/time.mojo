@@ -19,11 +19,17 @@ from time import now
 ```
 """
 
-from sys import external_call
-from sys.info import os_is_linux, os_is_windows
+from sys import (
+    external_call,
+    os_is_linux,
+    os_is_windows,
+    triple_is_nvidia_cuda,
+    llvm_intrinsic,
+)
+from sys._assembly import inlined_assembly
+from math import floor
 
-from builtin.simd import _floor
-from memory.unsafe import Pointer
+from memory import UnsafePointer
 
 # ===----------------------------------------------------------------------===#
 # Utilities
@@ -44,7 +50,7 @@ alias _MSEC_PER_SEC = 1000
 alias _NSEC_PER_SEC = _NSEC_PER_USEC * _USEC_PER_MSEC * _MSEC_PER_SEC
 
 # LARGE_INTEGER in Windows represent a signed 64 bit integer. Internally it
-# is implemented as a union of of one 64 bit integer or two 32 bit integers
+# is implemented as a union of one 64 bit integer or two 32 bit integers
 # for 64/32 bit compilers.
 # https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-large_integer-r1
 alias _WINDOWS_LARGE_INTEGER = Int64
@@ -67,6 +73,7 @@ struct _CTimeSpec(Stringable):
         else:
             return self.tv_sec * _NSEC_PER_SEC + self.tv_subsec * _NSEC_PER_USEC
 
+    @no_inline
     fn __str__(self) -> String:
         return str(self.as_nanoseconds()) + "ns"
 
@@ -83,7 +90,7 @@ struct _FILETIME:
 
     fn as_nanoseconds(self) -> Int:
         # AFTER subtracting windows offset the return value fits in a signed int64
-        # BEFORE subtracting windows offset the return value  does not fit in a signed int64
+        # BEFORE subtracting windows offset the return value does not fit in a signed int64
         # Taken from https://github.com/microsoft/STL/blob/c8d1efb6d504f6392acf8f6d01fd703f7c8826c0/stl/src/xtime.cpp#L50
         alias windowsToUnixEpochOffsetNs: Int = 0x19DB1DED53E8000
         var interval_count: UInt64 = (
@@ -98,9 +105,7 @@ fn _clock_gettime(clockid: Int) -> _CTimeSpec:
     var ts = _CTimeSpec()
 
     # Call libc's clock_gettime.
-    _ = external_call["clock_gettime", Int32](
-        Int32(clockid), Pointer.address_of(ts)
-    )
+    _ = external_call["clock_gettime", Int32](Int32(clockid), Reference(ts))
 
     return ts
 
@@ -129,9 +134,7 @@ fn _monotonic_nanoseconds() -> Int:
     @parameter
     if os_is_windows():
         var ft = _FILETIME()
-        external_call["GetSystemTimePreciseAsFileTime", NoneType](
-            Pointer.address_of(ft)
-        )
+        external_call["GetSystemTimePreciseAsFileTime", NoneType](Reference(ft))
 
         return ft.as_nanoseconds()
     else:
@@ -160,13 +163,61 @@ fn _thread_cputime_nanoseconds() -> Int:
 
 
 # ===----------------------------------------------------------------------===#
+# perf_counter
+# ===----------------------------------------------------------------------===#
+
+
+@always_inline
+fn perf_counter() -> Float64:
+    """Return the value (in fractional seconds) of a performance counter, i.e.
+    a clock with the highest available resolution to measure a short duration.
+    It does include time elapsed during sleep and is system-wide. The reference
+    point of the returned value is undefined, so that only the difference
+    between the results of two calls is valid.
+
+    Returns:
+        The current time in ns.
+    """
+    return Float64(_monotonic_nanoseconds()) / _NSEC_PER_SEC
+
+
+# ===----------------------------------------------------------------------===#
+# perf_counter_ns
+# ===----------------------------------------------------------------------===#
+
+
+@always_inline
+fn perf_counter_ns() -> Int:
+    """Return the value (in nanoseconds) of a performance counter, i.e.
+    a clock with the highest available resolution to measure a short duration.
+    It does include time elapsed during sleep and is system-wide. The reference
+    point of the returned value is undefined, so that only the difference
+    between the results of two calls is valid.
+
+    Returns:
+        The current time in ns.
+    """
+
+    @parameter
+    if triple_is_nvidia_cuda():
+        return int(
+            inlined_assembly[
+                "mov.u64 $0, %globaltimer;", UInt64, constraints="=l"
+            ]()
+        )
+    return _monotonic_nanoseconds()
+
+
+# ===----------------------------------------------------------------------===#
 # now
 # ===----------------------------------------------------------------------===#
 
 
 @always_inline
 fn now() -> Int:
-    """Returns the current monotonic time time in nanoseconds. This function
+    """Deprecated: Please use time.perf_counter_ns instead.
+
+    Returns the current monotonic time time in nanoseconds. This function
     queries the current platform's monotonic clock, making it useful for
     measuring time differences, but the significance of the returned value
     varies depending on the underlying implementation.
@@ -174,7 +225,7 @@ fn now() -> Int:
     Returns:
         The current time in ns.
     """
-    return _monotonic_nanoseconds()
+    return perf_counter_ns()
 
 
 # ===----------------------------------------------------------------------===#
@@ -188,17 +239,19 @@ fn _time_function_windows[func: fn () capturing -> None]() -> Int:
     """Calculates elapsed time in Windows"""
 
     var ticks_per_sec: _WINDOWS_LARGE_INTEGER = 0
-    var ticks_per_sec_ptr = Pointer[_WINDOWS_LARGE_INTEGER].address_of(
+    var ticks_per_sec_ptr = UnsafePointer[_WINDOWS_LARGE_INTEGER].address_of(
         ticks_per_sec
     )
     external_call["QueryPerformanceFrequency", NoneType](ticks_per_sec_ptr)
 
     var starting_tick_count: _WINDOWS_LARGE_INTEGER = 0
-    var start_ptr = Pointer[_WINDOWS_LARGE_INTEGER].address_of(
+    var start_ptr = UnsafePointer[_WINDOWS_LARGE_INTEGER].address_of(
         starting_tick_count
     )
     var ending_tick_count: _WINDOWS_LARGE_INTEGER = 0
-    var end_ptr = Pointer[_WINDOWS_LARGE_INTEGER].address_of(ending_tick_count)
+    var end_ptr = UnsafePointer[_WINDOWS_LARGE_INTEGER].address_of(
+        ending_tick_count
+    )
 
     external_call["QueryPerformanceCounter", NoneType](start_ptr)
     func()
@@ -227,9 +280,9 @@ fn time_function[func: fn () capturing -> None]() -> Int:
     if os_is_windows():
         return _time_function_windows[func]()
 
-    var tic = now()
+    var tic = perf_counter_ns()
     func()
-    var toc = now()
+    var toc = perf_counter_ns()
     return toc - tic
 
 
@@ -244,15 +297,27 @@ fn sleep(sec: Float64):
     Args:
         sec: The number of seconds to sleep for.
     """
+
+    @parameter
+    if triple_is_nvidia_cuda():
+        var nsec = sec * 1.0e9
+        llvm_intrinsic["llvm.nvvm.nanosleep", NoneType](
+            nsec.cast[DType.int32]()
+        )
+        return
+
     alias NANOSECONDS_IN_SECOND = 1_000_000_000
-    var total_secs = _floor(sec)
+    var total_secs = floor(sec)
     var tv_spec = _CTimeSpec(
-        int(total_secs.cast[DType.index]()),
+        int(total_secs),
         int((sec - total_secs) * NANOSECONDS_IN_SECOND),
     )
-    var req = Pointer[_CTimeSpec].address_of(tv_spec)
-    var rem = Pointer[_CTimeSpec].get_null()
+    var req = UnsafePointer[_CTimeSpec].address_of(tv_spec)
+    var rem = UnsafePointer[_CTimeSpec]()
     _ = external_call["nanosleep", Int32](req, rem)
+    _ = tv_spec
+    _ = req
+    _ = rem
 
 
 fn sleep(sec: Int):
@@ -263,8 +328,12 @@ fn sleep(sec: Int):
     """
 
     @parameter
+    if triple_is_nvidia_cuda():
+        return sleep(Float64(sec))
+
+    @parameter
     if os_is_windows():
         # In Windows the argument is in milliseconds.
         external_call["Sleep", NoneType](sec * 1000)
     else:
-        external_call["sleep", NoneType](sec)
+        external_call["sleep", NoneType](Int32(sec))

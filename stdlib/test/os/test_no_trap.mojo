@@ -10,11 +10,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
-# RUN: %mojo -debug-level full %s -an_argument | FileCheck %s
+# RUN: %mojo %s -an_argument | FileCheck %s
 # We pass an_argument here to avoid the compiler from optimizing the code
 # away.
 
 from sys import argv
+from os import abort
 
 
 # CHECK-LABEL: OK

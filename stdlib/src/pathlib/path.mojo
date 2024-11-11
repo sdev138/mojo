@@ -14,9 +14,12 @@
 """
 
 import os
+from collections import List
 from os import PathLike, listdir, stat_result
-from sys.info import os_is_windows
+from sys import os_is_windows, external_call
+from sys.ffi import C_char
 
+from builtin._location import __call_location, _SourceLocation
 from memory import stack_allocation
 
 from utils import StringRef
@@ -31,20 +34,44 @@ fn cwd() raises -> Path:
       The current directory.
     """
     alias MAX_CWD_BUFFER_SIZE = 1024
-    var buf = stack_allocation[MAX_CWD_BUFFER_SIZE, DType.int8]()
+    var buf = stack_allocation[MAX_CWD_BUFFER_SIZE, C_char]()
 
-    var res = external_call["getcwd", DTypePointer[DType.int8]](
-        buf, MAX_CWD_BUFFER_SIZE
+    var res = external_call["getcwd", UnsafePointer[C_char]](
+        buf, Int(MAX_CWD_BUFFER_SIZE)
     )
 
     # If we get a nullptr, then we raise an error.
-    if res == DTypePointer[DType.int8]():
+    if res == UnsafePointer[C_char]():
         raise Error("unable to query the current directory")
 
     return String(StringRef(buf))
 
 
-struct Path(Stringable, CollectionElement, PathLike, KeyElement):
+@always_inline
+fn _dir_of_current_file() raises -> Path:
+    """Gets the directory the file is at.
+
+    Returns:
+      The directory the file calling is at.
+    """
+    return _dir_of_current_file_impl(__call_location().file_name)
+
+
+@no_inline
+fn _dir_of_current_file_impl(file_name: StringLiteral) raises -> Path:
+    var i = str(file_name).rfind(DIR_SEPARATOR)
+    return Path(str(file_name)[0:i])
+
+
+struct Path(
+    Stringable,
+    Boolable,
+    Formattable,
+    CollectionElement,
+    CollectionElementNew,
+    PathLike,
+    KeyElement,
+):
     """The Path object."""
 
     var path: String
@@ -54,14 +81,6 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
         """Initializes a path with the current directory."""
         self = cwd()
 
-    fn __init__(inout self, path: StringLiteral):
-        """Initializes a path with the provided path.
-
-        Args:
-          path: The file system path.
-        """
-        self.path = path
-
     fn __init__(inout self, path: String):
         """Initializes a path with the provided path.
 
@@ -70,14 +89,23 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
         """
         self.path = path
 
+    fn __init__(inout self, *, other: Self):
+        """Copy the object.
+
+        Args:
+            other: The value to copy.
+        """
+        self.path = String(other=other.path)
+
     fn __moveinit__(inout self, owned existing: Self):
         """Move data of an existing Path into a new one.
 
         Args:
             existing: The existing Path.
         """
-        self.path = existing.path ^
+        self.path = existing.path^
 
+    @always_inline
     fn __copyinit__(inout self, existing: Self):
         """Copy constructor for the path struct.
 
@@ -96,17 +124,6 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
           A new path with the suffix appended to the current path.
         """
         return self.__truediv__(suffix.path)
-
-    fn __truediv__(self, suffix: StringLiteral) -> Self:
-        """Joins two paths using the system-defined path separator.
-
-        Args:
-          suffix: The suffix to append to the path.
-
-        Returns:
-          A new path with the suffix appended to the current path.
-        """
-        return self.__truediv__(String(suffix))
 
     fn __truediv__(self, suffix: String) -> Self:
         """Joins two paths using the system-defined path separator.
@@ -132,19 +149,40 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
         else:
             self.path += DIR_SEPARATOR + suffix
 
+    @no_inline
     fn __str__(self) -> String:
         """Returns a string representation of the path.
 
         Returns:
-          A string represntation of the path.
+          A string representation of the path.
         """
-        return self.path
+        return String.format_sequence(self)
 
+    @always_inline
+    fn __bool__(self) -> Bool:
+        """Checks if the path is not empty.
+
+        Returns:
+            True if the path length is greater than zero, and False otherwise.
+        """
+        return self.path.byte_length() > 0
+
+    fn format_to(self, inout writer: Formatter):
+        """
+        Formats this path to the provided formatter.
+
+        Args:
+            writer: The formatter to write to.
+        """
+
+        writer.write(self.path)
+
+    @always_inline
     fn __fspath__(self) -> String:
         """Returns a string representation of the path.
 
         Returns:
-          A string represntation of the path.
+          A string representation of the path.
         """
         return str(self)
 
@@ -152,7 +190,7 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
         """Returns a printable representation of the path.
 
         Returns:
-          A printable represntation of the path.
+          A printable representation of the path.
         """
         return str(self)
 
@@ -165,7 +203,18 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
         Returns:
           True if the paths are equal and False otherwise.
         """
-        return self.__str__() == other.__str__()
+        return str(self) == str(other)
+
+    fn __eq__(self, other: String) -> Bool:
+        """Returns True if the two paths are equal.
+
+        Args:
+          other: The other path to compare against.
+
+        Returns:
+          True if the String and Path are equal, and False otherwise.
+        """
+        return self.path == other
 
     fn __ne__(self, other: Self) -> Bool:
         """Returns True if the two paths are not equal.
@@ -178,7 +227,7 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
         """
         return not self == other
 
-    fn __hash__(self) -> Int:
+    fn __hash__(self) -> UInt:
         """Hash the underlying path string using builtin hash.
 
         Returns:
@@ -205,6 +254,7 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
         """
         return os.lstat(self)
 
+    @always_inline
     fn exists(self) -> Bool:
         """Returns True if the path exists and False otherwise.
 
@@ -212,6 +262,26 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
           True if the path exists on disk and False otherwise.
         """
         return os.path.exists(self)
+
+    fn expanduser(self) raises -> Path:
+        """Expands a prefixed `~` with $HOME on posix or $USERPROFILE on
+        windows. If environment variables are not set or the `path` is not
+        prefixed with `~`, returns the `path` unmodified.
+
+        Returns:
+            The expanded path.
+        """
+        return os.path.expanduser(self)
+
+    @staticmethod
+    fn home() raises -> Path:
+        """Returns $HOME on posix or $USERPROFILE on windows. If environment
+        variables are not set it returns `~`.
+
+        Returns:
+            Path to user home directory.
+        """
+        return os.path.expanduser("~")
 
     fn is_dir(self) -> Bool:
         """Returns True if the path is a directory and False otherwise.
@@ -240,7 +310,7 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
         with open(self, "r") as f:
             return f.read()
 
-    fn read_bytes(self) raises -> List[Int8]:
+    fn read_bytes(self) raises -> List[UInt8]:
         """Returns content of the file as bytes.
 
         Returns:
@@ -261,7 +331,6 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
         with open(self, "w") as f:
             f.write(str(value))
 
-    @always_inline
     fn suffix(self) -> String:
         """The path's extension, if any.
         This includes the leading period. For example: '.txt'.
@@ -286,7 +355,7 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
             pathsegments: The path segments.
 
         Returns:
-            The path concatination with the pathsegments using the
+            The path concatenation with the pathsegments using the
             directory separator.
         """
         if len(pathsegments) == 0:
@@ -303,7 +372,7 @@ struct Path(Stringable, CollectionElement, PathLike, KeyElement):
         """Gets the list of entries contained in the path provided.
 
         Returns:
-          Returns the list of entries in the path provided.
+            The list of entries in the path provided.
         """
 
         var ls = listdir(self)

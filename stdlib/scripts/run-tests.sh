@@ -25,6 +25,17 @@ source "${SCRIPT_DIR}"/build-stdlib.sh
 
 echo "Packaging up the test_utils."
 TEST_UTILS_PATH="${REPO_ROOT}/stdlib/test/test_utils"
+# This is needed to compile test_utils.mojopkg correctly, otherwise it 
+# uses the stdlib that's given in the nightly, and will fail compilation
+# if some breaking changes are made.
+export MODULAR_MOJO_NIGHTLY_IMPORT_PATH=$BUILD_DIR
 mojo package "${TEST_UTILS_PATH}" -o "${BUILD_DIR}/test_utils.mojopkg"
 
-lit -sv "${REPO_ROOT}"/stdlib/test
+TEST_PATH="${REPO_ROOT}/stdlib/test"
+if [[ $# -gt 0 ]]; then
+  # If an argument is provided, use it as the specific test file or directory
+  TEST_PATH=$1
+fi
+
+# Run the tests
+lit -sv "${TEST_PATH}"

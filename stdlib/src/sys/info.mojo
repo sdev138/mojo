@@ -15,11 +15,11 @@
 You can import these APIs from the `sys` package. For example:
 
 ```mojo
-from sys.info import is_x86
+from sys import is_x86
 ```
 """
 
-from .ffi import _external_call_const
+from .ffi import _external_call_const, external_call
 
 
 @always_inline("nodebug")
@@ -28,7 +28,7 @@ fn _current_target() -> __mlir_type.`!kgen.target`:
 
 
 @always_inline("nodebug")
-fn _current_cpu() -> __mlir_type.`!kgen.string`:
+fn _current_arch() -> __mlir_type.`!kgen.string`:
     return __mlir_attr[
         `#kgen.param.expr<target_get_field,`,
         _current_target(),
@@ -103,6 +103,22 @@ fn has_avx512f() -> Bool:
         `#kgen.param.expr<target_has_feature,`,
         _current_target(),
         `, "avx512f" : !kgen.string`,
+        `> : i1`,
+    ]
+
+
+@always_inline("nodebug")
+fn has_fma() -> Bool:
+    """Returns True if the host system has FMA (Fused Multiply-Add) support,
+    otherwise returns False.
+
+    Returns:
+        True if the host system has FMA support, otherwise returns False.
+    """
+    return __mlir_attr[
+        `#kgen.param.expr<target_has_feature,`,
+        _current_target(),
+        `, "fma" : !kgen.string`,
         `> : i1`,
     ]
 
@@ -202,7 +218,7 @@ fn is_apple_m1() -> Bool:
     """
     return __mlir_attr[
         `#kgen.param.expr<eq,`,
-        _current_cpu(),
+        _current_arch(),
         `, "apple-m1" : !kgen.string`,
         `> : i1`,
     ]
@@ -219,7 +235,7 @@ fn is_apple_m2() -> Bool:
     """
     return __mlir_attr[
         `#kgen.param.expr<eq,`,
-        _current_cpu(),
+        _current_arch(),
         `, "apple-m2" : !kgen.string`,
         `> : i1`,
     ]
@@ -236,7 +252,7 @@ fn is_apple_m3() -> Bool:
     """
     return __mlir_attr[
         `#kgen.param.expr<eq,`,
-        _current_cpu(),
+        _current_arch(),
         `, "apple-m3" : !kgen.string`,
         `> : i1`,
     ]
@@ -264,7 +280,7 @@ fn is_neoverse_n1() -> Bool:
     """
     return __mlir_attr[
         `#kgen.param.expr<eq,`,
-        _current_cpu(),
+        _current_arch(),
         `, "neoverse-n1" : !kgen.string`,
         `> : i1`,
     ]
@@ -447,9 +463,35 @@ fn is_big_endian[
 
 
 @always_inline("nodebug")
+fn is_32bit[target: __mlir_type.`!kgen.target` = _current_target()]() -> Bool:
+    """Returns True if the maximum integral value is 32 bit.
+
+    Parameters:
+        target: The target architecture.
+
+    Returns:
+        True if the maximum integral value is 32 bit, False otherwise.
+    """
+    return sizeof[DType.index, target]() == sizeof[DType.int32, target]()
+
+
+@always_inline("nodebug")
+fn is_64bit[target: __mlir_type.`!kgen.target` = _current_target()]() -> Bool:
+    """Returns True if the maximum integral value is 64 bit.
+
+    Parameters:
+        target: The target architecture.
+
+    Returns:
+        True if the maximum integral value is 64 bit, False otherwise.
+    """
+    return sizeof[DType.index, target]() == sizeof[DType.int64, target]()
+
+
+@always_inline("nodebug")
 fn simdbitwidth[
     target: __mlir_type.`!kgen.target` = _current_target()
-]() -> Int:
+]() -> IntLiteral:
     """Returns the vector size (in bits) of the host system.
 
     Parameters:
@@ -462,14 +504,14 @@ fn simdbitwidth[
         `#kgen.param.expr<target_get_field,`,
         target,
         `, "simd_bit_width" : !kgen.string`,
-        `> : index`,
+        `> : !kgen.int_literal`,
     ]
 
 
 @always_inline("nodebug")
 fn simdbytewidth[
     target: __mlir_type.`!kgen.target` = _current_target()
-]() -> Int:
+]() -> IntLiteral:
     """Returns the vector size (in bytes) of the host system.
 
     Parameters:
@@ -484,8 +526,8 @@ fn simdbytewidth[
 
 @always_inline("nodebug")
 fn sizeof[
-    type: AnyRegType, target: __mlir_type.`!kgen.target` = _current_target()
-]() -> Int:
+    type: AnyType, target: __mlir_type.`!kgen.target` = _current_target()
+]() -> IntLiteral:
     """Returns the size of (in bytes) of the type.
 
     Parameters:
@@ -495,19 +537,26 @@ fn sizeof[
     Returns:
         The size of the type in bytes.
     """
-    return __mlir_attr[
-        `#kgen.param.expr<get_sizeof, #kgen.parameterizedtype.constant<`,
+    alias mlir_type = __mlir_attr[
+        `#kgen.param.expr<rebind, #kgen.type<!kgen.paramref<`,
         type,
+        `>> : `,
+        AnyType,
+        `> : !kgen.type`,
+    ]
+    return __mlir_attr[
+        `#kgen.param.expr<get_sizeof, #kgen.type<`,
+        mlir_type,
         `> : !kgen.type,`,
         target,
-        `> : index`,
+        `> : !kgen.int_literal`,
     ]
 
 
 @always_inline("nodebug")
 fn sizeof[
     type: DType, target: __mlir_type.`!kgen.target` = _current_target()
-]() -> Int:
+]() -> IntLiteral:
     """Returns the size of (in bytes) of the dtype.
 
     Parameters:
@@ -518,20 +567,20 @@ fn sizeof[
         The size of the dtype in bytes.
     """
     return __mlir_attr[
-        `#kgen.param.expr<get_sizeof, #kgen.parameterizedtype.constant<`,
+        `#kgen.param.expr<get_sizeof, #kgen.type<`,
         `!pop.scalar<`,
         type.value,
         `>`,
         `> : !kgen.type,`,
         target,
-        `> : index`,
+        `> : !kgen.int_literal`,
     ]
 
 
 @always_inline("nodebug")
 fn alignof[
-    type: AnyRegType, target: __mlir_type.`!kgen.target` = _current_target()
-]() -> Int:
+    type: AnyType, target: __mlir_type.`!kgen.target` = _current_target()
+]() -> IntLiteral:
     """Returns the align of (in bytes) of the type.
 
     Parameters:
@@ -541,19 +590,26 @@ fn alignof[
     Returns:
         The alignment of the type in bytes.
     """
-    return __mlir_attr[
-        `#kgen.param.expr<get_alignof, #kgen.parameterizedtype.constant<`,
+    alias mlir_type = __mlir_attr[
+        `#kgen.param.expr<rebind, #kgen.type<!kgen.paramref<`,
         type,
+        `>> : `,
+        AnyType,
+        `> : !kgen.type`,
+    ]
+    return __mlir_attr[
+        `#kgen.param.expr<get_alignof, #kgen.type<`,
+        +mlir_type,
         `> : !kgen.type,`,
         target,
-        `> : index`,
+        `> : !kgen.int_literal`,
     ]
 
 
 @always_inline("nodebug")
 fn alignof[
     type: DType, target: __mlir_type.`!kgen.target` = _current_target()
-]() -> Int:
+]() -> IntLiteral:
     """Returns the align of (in bytes) of the dtype.
 
     Parameters:
@@ -564,20 +620,21 @@ fn alignof[
         The alignment of the dtype in bytes.
     """
     return __mlir_attr[
-        `#kgen.param.expr<get_alignof, #kgen.parameterizedtype.constant<`,
+        `#kgen.param.expr<get_alignof, #kgen.type<`,
         `!pop.scalar<`,
         type.value,
         `>`,
         `> : !kgen.type,`,
         target,
-        `> : index`,
+        `> : !kgen.int_literal`,
     ]
 
 
 @always_inline("nodebug")
 fn bitwidthof[
-    type: AnyRegType, target: __mlir_type.`!kgen.target` = _current_target()
-]() -> Int:
+    type: AnyTrivialRegType,
+    target: __mlir_type.`!kgen.target` = _current_target(),
+]() -> IntLiteral:
     """Returns the size of (in bits) of the type.
 
     Parameters:
@@ -594,7 +651,7 @@ fn bitwidthof[
 @always_inline("nodebug")
 fn bitwidthof[
     type: DType, target: __mlir_type.`!kgen.target` = _current_target()
-]() -> Int:
+]() -> IntLiteral:
     """Returns the size of (in bits) of the dtype.
 
     Parameters:
@@ -611,8 +668,9 @@ fn bitwidthof[
 
 @always_inline("nodebug")
 fn simdwidthof[
-    type: AnyRegType, target: __mlir_type.`!kgen.target` = _current_target()
-]() -> Int:
+    type: AnyTrivialRegType,
+    target: __mlir_type.`!kgen.target` = _current_target(),
+]() -> IntLiteral:
     """Returns the vector size of the type on the host system.
 
     Parameters:
@@ -628,7 +686,7 @@ fn simdwidthof[
 @always_inline("nodebug")
 fn simdwidthof[
     type: DType, target: __mlir_type.`!kgen.target` = _current_target()
-]() -> Int:
+]() -> IntLiteral:
     """Returns the vector size of the type on the host system.
 
     Parameters:
@@ -672,3 +730,49 @@ fn num_performance_cores() -> Int:
         Int: The number of physical performance cores on the system.
     """
     return _external_call_const["KGEN_CompilerRT_NumPerformanceCores", Int]()
+
+
+@always_inline
+fn _macos_version() raises -> Tuple[Int, Int, Int]:
+    """Gets the macOS version.
+
+    Returns:
+        The version triple of macOS.
+    """
+
+    constrained[os_is_macos(), "the operating system must be macOS"]()
+
+    alias INITIAL_CAPACITY = 32
+
+    var buf = List[UInt8](capacity=INITIAL_CAPACITY)
+    var buf_len = Int(INITIAL_CAPACITY)
+
+    var err = external_call["sysctlbyname", Int32](
+        "kern.osproductversion".unsafe_cstr_ptr(),
+        buf.data,
+        Reference(buf_len),
+        UnsafePointer[NoneType](),
+        Int(0),
+    )
+
+    if err:
+        raise "Unable to query macOS version"
+
+    var osver = String(buf.steal_data(), buf_len)
+
+    var major = 0
+    var minor = 0
+    var patch = 0
+
+    if "." in osver:
+        major = int(osver[: osver.find(".")])
+        osver = osver[osver.find(".") + 1 :]
+
+    if "." in osver:
+        minor = int(osver[: osver.find(".")])
+        osver = osver[osver.find(".") + 1 :]
+
+    if "." in osver:
+        patch = int(osver[: osver.find(".")])
+
+    return (major, minor, patch)

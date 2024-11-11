@@ -19,10 +19,7 @@ from os import setenv
 ```
 """
 
-from sys import external_call
-from sys.info import os_is_linux, os_is_macos
-
-from memory.unsafe import DTypePointer
+from sys import external_call, os_is_linux, os_is_macos
 
 from utils import StringRef
 
@@ -48,7 +45,7 @@ fn setenv(name: String, value: String, overwrite: Bool = True) -> Bool:
         return False
 
     var status = external_call["setenv", Int32](
-        name._as_ptr(), value._as_ptr(), Int32(1 if overwrite else 0)
+        name.unsafe_ptr(), value.unsafe_ptr(), Int32(1 if overwrite else 0)
     )
     return status == 0
 
@@ -73,7 +70,7 @@ fn getenv(name: String, default: String = "") -> String:
     if not os_is_supported:
         return default
 
-    var ptr = external_call["getenv", DTypePointer[DType.int8]](name._as_ptr())
+    var ptr = external_call["getenv", UnsafePointer[UInt8]](name.unsafe_ptr())
     if not ptr:
         return default
     return String(StringRef(ptr))

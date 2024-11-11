@@ -13,10 +13,14 @@
 """Implements the StringRef class.
 """
 
-
+from bit import count_trailing_zeros
 from builtin.dtype import _uint_type_of_width
-from builtin.string import _atol
-from memory.unsafe import DTypePointer, Pointer
+from collections.string import _atol, _isspace
+from memory import UnsafePointer, memcmp, bitcast
+from memory.memory import _memcmp_impl_unconstrained
+from utils import StringSlice
+from sys.ffi import C_char
+from sys import simdwidthof
 
 # ===----------------------------------------------------------------------=== #
 # Utilities
@@ -24,24 +28,8 @@ from memory.unsafe import DTypePointer, Pointer
 
 
 @always_inline
-fn _align_up(value: Int, alignment: Int) -> Int:
-    var div_ceil = (value + alignment - 1)._positive_div(alignment)
-    return div_ceil * alignment
-
-
-@always_inline
 fn _align_down(value: Int, alignment: Int) -> Int:
     return value._positive_div(alignment) * alignment
-
-
-@always_inline
-fn _min(a: Int, b: Int) -> Int:
-    return a if a < b else b
-
-
-@always_inline
-fn _max(a: Int, b: Int) -> Int:
-    return a if a > b else b
 
 
 # ===----------------------------------------------------------------------===#
@@ -55,160 +43,175 @@ struct StringRef(
     Sized,
     IntableRaising,
     CollectionElement,
+    CollectionElementNew,
     Stringable,
+    Formattable,
     Hashable,
     Boolable,
-    EqualityComparable,
+    Comparable,
 ):
     """
     Represent a constant reference to a string, i.e. a sequence of characters
     and a length, which need not be null terminated.
     """
 
-    var data: DTypePointer[DType.int8]
+    # Fields
+    var data: UnsafePointer[UInt8]
     """A pointer to the beginning of the string data being referenced."""
     var length: Int
     """The length of the string being referenced."""
 
+    # ===-------------------------------------------------------------------===#
+    # Life cycle methods
+    # ===-------------------------------------------------------------------===#
+
     @always_inline
-    fn __init__(str: StringLiteral) -> StringRef:
+    fn __init__(inout self):
+        """Construct a StringRef value with length zero."""
+        self = StringRef(UnsafePointer[UInt8](), 0)
+
+    @always_inline
+    fn __init__(inout self, *, other: Self):
+        """Copy the object.
+
+        Args:
+            other: The value to copy.
+        """
+        self.data = other.data
+        self.length = other.length
+
+    @always_inline
+    fn __init__(inout self, str: StringLiteral):
         """Construct a StringRef value given a constant string.
 
         Args:
             str: The input constant string.
-
-        Returns:
-            Constructed `StringRef` object.
         """
-        return StringRef(str.data(), len(str))
-
-    fn __str__(self) -> String:
-        """Convert the string reference to a string.
-
-        Returns:
-            A new string.
-        """
-        return self
+        self = StringRef(str.unsafe_ptr(), len(str))
 
     @always_inline
-    fn __init__(ptr: Pointer[Int8], len: Int) -> StringRef:
+    fn __init__(inout self, ptr: UnsafePointer[C_char], len: Int):
         """Construct a StringRef value given a (potentially non-0 terminated
         string).
 
         The constructor takes a raw pointer and a length.
 
-        Args:
-            ptr: Pointer to the string.
-            len: The length of the string.
-
-        Returns:
-            Constructed `StringRef` object.
-        """
-
-        return Self {data: ptr, length: len}
-
-    @always_inline
-    fn __init__(ptr: DTypePointer[DType.int8], len: Int) -> StringRef:
-        """Construct a StringRef value given a (potentially non-0 terminated
-        string).
-
-        The constructor takes a raw pointer and a length.
+        Note that you should use the constructor from `UnsafePointer[UInt8]` instead
+        as we are now storing the bytes as UInt8.
+        See https://github.com/modularml/mojo/issues/2317 for more information.
 
         Args:
-            ptr: Pointer to the string.
+            ptr: UnsafePointer to the string.
             len: The length of the string.
-
-        Returns:
-            Constructed `StringRef` object.
         """
 
-        return Self {data: ptr, length: len}
+        self.data = ptr.bitcast[UInt8]()
+        self.length = len
 
     @always_inline
-    fn __init__(ptr: Pointer[Int8]) -> StringRef:
+    fn __init__(inout self, ptr: UnsafePointer[UInt8]):
         """Construct a StringRef value given a null-terminated string.
 
         Args:
-            ptr: Pointer to the string.
-
-        Returns:
-            Constructed `StringRef` object.
-        """
-
-        return DTypePointer[DType.int8](ptr.address)
-
-    @always_inline
-    fn __init__(ptr: DTypePointer[DType.int8]) -> StringRef:
-        """Construct a StringRef value given a null-terminated string.
-
-        Args:
-            ptr: Pointer to the string.
-
-        Returns:
-            Constructed `StringRef` object.
+            ptr: UnsafePointer to the string.
         """
 
         var len = 0
         while ptr.load(len):
             len += 1
 
-        return StringRef(ptr, len)
+        self = StringRef(ptr, len)
 
     @always_inline
-    fn _as_ptr(self) -> DTypePointer[DType.int8]:
-        """Retrieves a pointer to the underlying memory.
+    fn __init__(inout self, ptr: UnsafePointer[C_char]):
+        """Construct a StringRef value given a null-terminated string.
 
-        Returns:
-            The pointer to the underlying memory.
-        """
-        return self.data
-
-    @always_inline
-    fn __bool__(self) -> Bool:
-        """Checks if the string is empty or not.
-
-        Returns:
-          Returns True if the string is not empty and False otherwise.
-        """
-        return len(self) != 0
-
-    @always_inline
-    fn __len__(self) -> Int:
-        """Returns the length of the string.
-
-        Returns:
-          The length of the string.
-        """
-        return self.length
-
-    @always_inline("nodebug")
-    fn __eq__(self, rhs: StringRef) -> Bool:
-        """Compares two strings are equal.
+        Note that you should use the constructor from `UnsafePointer[UInt8]` instead
+        as we are now storing the bytes as UInt8.
+        See https://github.com/modularml/mojo/issues/2317 for more information.
 
         Args:
-          rhs: The other string.
-
-        Returns:
-          True if the strings match and False otherwise.
+            ptr: UnsafePointer to the string.
         """
-        if len(self) != len(rhs):
-            return False
-        for i in range(len(self)):
-            if self.data.load(i) != rhs.data.load(i):
-                return False
-        return True
 
-    @always_inline("nodebug")
-    fn __ne__(self, rhs: StringRef) -> Bool:
-        """Compares two strings are not equal.
+        var len = 0
+        while ptr.load(len):
+            len += 1
+
+        self = StringRef(ptr, len)
+
+    # ===-------------------------------------------------------------------===#
+    # Helper methods for slicing
+    # ===-------------------------------------------------------------------===#
+    # TODO: Move to slice syntax like str_ref[:42]
+
+    fn take_front(self, num_bytes: Int = 1) -> Self:
+        """Return a StringRef equal to 'self' but with only the first
+        `num_bytes` elements remaining.  If `num_bytes` is greater than the
+        length of the string, the entire string is returned.
 
         Args:
-          rhs: The other string.
+          num_bytes: The number of bytes to include.
 
         Returns:
-          True if the strings do not match and False otherwise.
+          A new slice that starts with those bytes.
         """
-        return not (self == rhs)
+        debug_assert(num_bytes >= 0, "num_bytes must be non-negative")
+        if num_bytes >= self.length:
+            return self
+        return Self(self.data, num_bytes)
+
+    fn take_back(self, num_bytes: Int = 1) -> Self:
+        """Return a StringRef equal to 'self' but with only the last
+        `num_bytes` elements remaining.  If `num_bytes` is greater than the
+        length of the string, the entire string is returned.
+
+        Args:
+          num_bytes: The number of bytes to include.
+
+        Returns:
+          A new slice that ends with those bytes.
+        """
+        debug_assert(num_bytes >= 0, "num_bytes must be non-negative")
+        if num_bytes >= self.length:
+            return self
+        return Self(self.data + (self.length - num_bytes), num_bytes)
+
+    fn drop_front(self, num_bytes: Int = 1) -> Self:
+        """Return a StringRef equal to 'self' but with the first
+        `num_bytes` elements skipped.  If `num_bytes` is greater than the
+        length of the string, an empty StringRef is returned.
+
+        Args:
+          num_bytes: The number of bytes to drop.
+
+        Returns:
+          A new slice with those bytes skipped.
+        """
+        debug_assert(num_bytes >= 0, "num_bytes must be non-negative")
+        if num_bytes >= self.length:
+            return StringRef()
+        return Self(self.data + num_bytes, self.length - num_bytes)
+
+    fn drop_back(self, num_bytes: Int = 1) -> Self:
+        """Return a StringRef equal to 'self' but with the last `num_bytes`
+        elements skipped.  If `num_bytes` is greater than the
+        length of the string, the entire string is returned.
+
+        Args:
+          num_bytes: The number of bytes to include.
+
+        Returns:
+          A new slice ends earlier than those bytes.
+        """
+        debug_assert(num_bytes >= 0, "num_bytes must be non-negative")
+        if num_bytes >= self.length:
+            return StringRef()
+        return Self(self.data, self.length - num_bytes)
+
+    # ===-------------------------------------------------------------------===#
+    # Operator dunders
+    # ===-------------------------------------------------------------------===#
 
     @always_inline("nodebug")
     fn __getitem__(self, idx: Int) -> StringRef:
@@ -222,7 +225,113 @@ struct StringRef(
         """
         return StringRef {data: self.data + idx, length: 1}
 
-    fn __hash__(self) -> Int:
+    @always_inline
+    fn __eq__(self, rhs: StringRef) -> Bool:
+        """Compares two strings are equal.
+
+        Args:
+          rhs: The other string.
+
+        Returns:
+          True if the strings match and False otherwise.
+        """
+        return not (self != rhs)
+
+    fn __contains__(self, substr: StringRef) -> Bool:
+        """Returns True if the substring is contained within the current string.
+
+        Args:
+          substr: The substring to check.
+
+        Returns:
+          True if the string contains the substring.
+        """
+        return self.find(substr) != -1
+
+    @always_inline
+    fn __ne__(self, rhs: StringRef) -> Bool:
+        """Compares two strings are not equal.
+
+        Args:
+          rhs: The other string.
+
+        Returns:
+          True if the strings do not match and False otherwise.
+        """
+        return len(self) != len(rhs) or _memcmp_impl_unconstrained(
+            self.data, rhs.data, len(self)
+        )
+
+    @always_inline
+    fn __lt__(self, rhs: StringRef) -> Bool:
+        """Compare this StringRef to the RHS using LT comparison.
+
+        Args:
+            rhs: The other StringRef to compare against.
+
+        Returns:
+            True if this string is strictly less than the RHS string and False
+            otherwise.
+        """
+        var len1 = len(self)
+        var len2 = len(rhs)
+        return int(len1 < len2) > _memcmp_impl_unconstrained(
+            self.data, rhs.data, min(len1, len2)
+        )
+
+    @always_inline
+    fn __le__(self, rhs: StringRef) -> Bool:
+        """Compare this StringRef to the RHS using LE comparison.
+
+        Args:
+            rhs: The other StringRef to compare against.
+
+        Returns:
+            True if this string is less than or equal to the RHS string and
+            False otherwise.
+        """
+        return not (rhs < self)
+
+    @always_inline
+    fn __gt__(self, rhs: StringRef) -> Bool:
+        """Compare this StringRef to the RHS using GT comparison.
+
+        Args:
+            rhs: The other StringRef to compare against.
+
+        Returns:
+            True if this string is strictly greater than the RHS string and
+            False otherwise.
+        """
+        return rhs < self
+
+    @always_inline
+    fn __ge__(self, rhs: StringRef) -> Bool:
+        """Compare this StringRef to the RHS using GE comparison.
+
+        Args:
+            rhs: The other StringRef to compare against.
+
+        Returns:
+            True if this string is greater than or equal to the RHS string and
+            False otherwise.
+        """
+        return not (self < rhs)
+
+    # ===-------------------------------------------------------------------===#
+    # Trait implementations
+    # ===-------------------------------------------------------------------===#
+
+    @always_inline
+    fn __bool__(self) -> Bool:
+        """Checks if the string is empty or not.
+
+        Returns:
+          Returns True if the string is not empty and False otherwise.
+        """
+        return len(self) != 0
+
+    fn __hash__(self) -> UInt:
         """Hash the underlying buffer using builtin hash.
 
         Returns:
@@ -231,6 +340,83 @@ struct StringRef(
             builtin documentation for more details.
         """
         return hash(self.data, self.length)
+
+    fn __int__(self) raises -> Int:
+        """Parses the given string as a base-10 integer and returns that value.
+
+        For example, `int("19")` returns `19`. If the given string cannot be parsed
+        as an integer value, an error is raised. For example, `int("hi")` raises an
+        error.
+
+        Returns:
+            An integer value that represents the string, or otherwise raises.
+        """
+        return _atol(self)
+
+    @always_inline
+    fn __len__(self) -> Int:
+        """Returns the length of the string.
+
+        Returns:
+          The length of the string.
+        """
+        return self.length
+
+    @no_inline
+    fn __str__(self) -> String:
+        """Convert the string reference to a string.
+
+        Returns:
+            A new string.
+        """
+        return String.format_sequence(self)
+
+    @no_inline
+    fn format_to(self, inout writer: Formatter):
+        """
+        Formats this StringRef to the provided formatter.
+
+        Args:
+            writer: The formatter to write to.
+        """
+
+        # SAFETY:
+        #   Safe because our use of this StringSlice does not outlive `self`.
+        var str_slice = StringSlice[ImmutableStaticLifetime](
+            unsafe_from_utf8_strref=self
+        )
+
+        writer.write_str(str_slice)
+
+    fn __fspath__(self) -> String:
+        """Return the file system path representation of the object.
+
+        Returns:
+          The file system path representation as a string.
+        """
+        return self.__str__()
+
+    # ===-------------------------------------------------------------------===#
+    # Methods
+    # ===-------------------------------------------------------------------===#
+
+    @always_inline
+    fn unsafe_ptr(self) -> UnsafePointer[UInt8]:
+        """Retrieves  a pointer to the underlying memory.
+
+        Returns:
+            The pointer to the underlying memory.
+        """
+        return self.data
+
+    @always_inline
+    fn empty(self) -> Bool:
+        """Returns True if the StringRef has length = 0.
+
+        Returns:
+            Whether the stringref is empty.
+        """
+        return self.length == 0
 
     fn count(self, substr: StringRef) -> Int:
         """Return the number of non-overlapping occurrences of substring
@@ -261,17 +447,8 @@ struct StringRef(
 
         return res
 
-    fn __contains__(self, substr: StringRef) -> Bool:
-        """Returns True if the substring is contained within the current string.
-
-        Args:
-          substr: The substring to check.
-
-        Returns:
-          True if the string contains the substring.
-        """
-        return self.find(substr) != -1
-
+    # TODO: remove this method later on when nothing depends on it anymore.
+    # It has already been copied to `StringSlice`.
     fn find(self, substr: StringRef, start: Int = 0) -> Int:
         """Finds the offset of the first occurrence of `substr` starting at
         `start`. If not found, returns -1.
@@ -294,16 +471,16 @@ struct StringRef(
         var haystack_str = self._from_start(start)
 
         var loc = _memmem(
-            haystack_str._as_ptr(),
+            haystack_str.unsafe_ptr(),
             len(haystack_str),
-            substr._as_ptr(),
+            substr.unsafe_ptr(),
             len(substr),
         )
 
         if not loc:
             return -1
 
-        return int(loc) - int(self._as_ptr())
+        return int(loc) - int(self.unsafe_ptr())
 
     fn rfind(self, substr: StringRef, start: Int = 0) -> Int:
         """Finds the offset of the last occurrence of `substr` starting at
@@ -327,16 +504,16 @@ struct StringRef(
         var haystack_str = self._from_start(start)
 
         var loc = _memrmem(
-            haystack_str._as_ptr(),
+            haystack_str.unsafe_ptr(),
             len(haystack_str),
-            substr._as_ptr(),
+            substr.unsafe_ptr(),
             len(substr),
         )
 
         if not loc:
             return -1
 
-        return int(loc) - int(self._as_ptr())
+        return int(loc) - int(self.unsafe_ptr())
 
     fn _from_start(self, start: Int) -> StringRef:
         """Gets the StringRef pointing to the substring after the specified slice start position.
@@ -359,12 +536,12 @@ struct StringRef(
             # Avoid out of bounds earlier than the start
             # len = 5, start = -3,  then abs_start == 2, i.e. a partial string
             # len = 5, start = -10, then abs_start == 0, i.e. the full string
-            abs_start = _max(self_len + start, 0)
+            abs_start = max(self_len + start, 0)
         else:
             # Avoid out of bounds past the end
             # len = 5, start = 2,   then abs_start == 2, i.e. a partial string
             # len = 5, start = 8,   then abs_start == 5, i.e. an empty string
-            abs_start = _min(start, self_len)
+            abs_start = min(start, self_len)
 
         debug_assert(
             abs_start >= 0, "strref absolute start must be non-negative"
@@ -379,17 +556,63 @@ struct StringRef(
 
         return StringRef(data, length)
 
-    fn __int__(self) raises -> Int:
-        """Parses the given string as a base-10 integer and returns that value.
+    fn strip(self) -> StringRef:
+        """Gets a StringRef with leading and trailing whitespaces removed.
+        This only takes C spaces into account: " \\t\\n\\r\\f\\v".
 
-        For example, `int("19")` returns `19`. If the given string cannot be parsed
-        as an integer value, an error is raised. For example, `int("hi")` raises an
-        error.
+        For example, `"  mojo  "` returns `"mojo"`.
 
         Returns:
-            An integer value that represents the string, or otherwise raises.
+            A StringRef with leading and trailing whitespaces removed.
         """
-        return _atol(self)
+        var start: Int = 0
+        var end: Int = len(self)
+        var ptr = self.unsafe_ptr()
+        while start < end and _isspace(ptr[start]):
+            start += 1
+        while end > start and _isspace(ptr[end - 1]):
+            end -= 1
+        return StringRef(ptr + start, end - start)
+
+    fn startswith(
+        self, prefix: StringRef, start: Int = 0, end: Int = -1
+    ) -> Bool:
+        """Checks if the StringRef starts with the specified prefix between start
+        and end positions. Returns True if found and False otherwise.
+
+        Args:
+          prefix: The prefix to check.
+          start: The start offset from which to check.
+          end: The end offset from which to check.
+
+        Returns:
+          True if the self[start:end] is prefixed by the input prefix.
+        """
+        if end == -1:
+            return self.find(prefix, start) == start
+        return StringRef(self.unsafe_ptr() + start, end - start).startswith(
+            prefix
+        )
+
+    fn endswith(self, suffix: StringRef, start: Int = 0, end: Int = -1) -> Bool:
+        """Checks if the StringRef end with the specified suffix between start
+        and end positions. Returns True if found and False otherwise.
+
+        Args:
+          suffix: The suffix to check.
+          start: The start offset from which to check.
+          end: The end offset from which to check.
+
+        Returns:
+          True if the self[start:end] is suffixed by the input suffix.
+        """
+        if len(suffix) > len(self):
+            return False
+        if end == -1:
+            return self.rfind(suffix, start) + len(suffix) == len(self)
+        return StringRef(self.unsafe_ptr() + start, end - start).endswith(
+            suffix
+        )
 
 
 # ===----------------------------------------------------------------------===#
@@ -397,24 +620,14 @@ struct StringRef(
 # ===----------------------------------------------------------------------===#
 
 
-@always_inline("nodebug")
-fn _cttz(val: Int) -> Int:
-    return llvm_intrinsic["llvm.cttz", Int](val, False)
-
-
-@always_inline("nodebug")
-fn _cttz(val: SIMD) -> __type_of(val):
-    return llvm_intrinsic["llvm.cttz", __type_of(val)](val, False)
-
-
 @always_inline
 fn _memchr[
     type: DType
-](source: DTypePointer[type], char: Scalar[type], len: Int) -> DTypePointer[
-    type
-]:
+](
+    source: UnsafePointer[Scalar[type]], char: Scalar[type], len: Int
+) -> UnsafePointer[Scalar[type]]:
     if not len:
-        return DTypePointer[type]()
+        return UnsafePointer[Scalar[type]]()
     alias bool_mask_width = simdwidthof[DType.bool]()
     var first_needle = SIMD[type, bool_mask_width](char)
     var vectorized_end = _align_down(len, bool_mask_width)
@@ -423,85 +636,100 @@ fn _memchr[
         var bool_mask = source.load[width=bool_mask_width](i) == first_needle
         var mask = bitcast[_uint_type_of_width[bool_mask_width]()](bool_mask)
         if mask:
-            return source + i + _cttz(mask)
+            return source + int(i + count_trailing_zeros(mask))
 
     for i in range(vectorized_end, len):
         if source[i] == char:
             return source + i
-    return DTypePointer[type]()
+    return UnsafePointer[Scalar[type]]()
 
 
 @always_inline
 fn _memmem[
     type: DType
 ](
-    haystack: DTypePointer[type],
+    haystack: UnsafePointer[Scalar[type]],
     haystack_len: Int,
-    needle: DTypePointer[type],
+    needle: UnsafePointer[Scalar[type]],
     needle_len: Int,
-) -> DTypePointer[type]:
+) -> UnsafePointer[Scalar[type]]:
     if not needle_len:
         return haystack
     if needle_len > haystack_len:
-        return DTypePointer[type]()
+        return UnsafePointer[Scalar[type]]()
     if needle_len == 1:
         return _memchr[type](haystack, needle[0], haystack_len)
 
     alias bool_mask_width = simdwidthof[DType.bool]()
-    var first_needle = SIMD[type, bool_mask_width](needle[0])
     var vectorized_end = _align_down(
         haystack_len - needle_len + 1, bool_mask_width
     )
+
+    var first_needle = SIMD[type, bool_mask_width](needle[0])
+    var last_needle = SIMD[type, bool_mask_width](needle[needle_len - 1])
+
     for i in range(0, vectorized_end, bool_mask_width):
-        var bool_mask = haystack.load[width=bool_mask_width](i) == first_needle
+        var first_block = haystack.load[width=bool_mask_width](i)
+        var last_block = haystack.load[width=bool_mask_width](
+            i + needle_len - 1
+        )
+
+        var eq_first = first_needle == first_block
+        var eq_last = last_needle == last_block
+
+        var bool_mask = eq_first & eq_last
         var mask = bitcast[_uint_type_of_width[bool_mask_width]()](bool_mask)
+
         while mask:
-            var offset = i + _cttz(mask)
+            var offset = int(i + count_trailing_zeros(mask))
             if memcmp(haystack + offset + 1, needle + 1, needle_len - 1) == 0:
                 return haystack + offset
             mask = mask & (mask - 1)
 
+    # remaining partial block compare using byte-by-byte
+    #
     for i in range(vectorized_end, haystack_len - needle_len + 1):
         if haystack[i] != needle[0]:
             continue
 
         if memcmp(haystack + i + 1, needle + 1, needle_len - 1) == 0:
             return haystack + i
-    return DTypePointer[type]()
+
+    return UnsafePointer[Scalar[type]]()
 
 
 @always_inline
 fn _memrchr[
     type: DType
-](source: DTypePointer[type], char: Scalar[type], len: Int) -> DTypePointer[
-    type
-]:
+](
+    source: UnsafePointer[Scalar[type]], char: Scalar[type], len: Int
+) -> UnsafePointer[Scalar[type]]:
     if not len:
-        return DTypePointer[type]()
-    for i in range(len - 1, -1, -1):
+        return UnsafePointer[Scalar[type]]()
+    for i in reversed(range(len)):
         if source[i] == char:
             return source + i
-    return DTypePointer[type]()
+    return UnsafePointer[Scalar[type]]()
 
 
 @always_inline
 fn _memrmem[
     type: DType
 ](
-    haystack: DTypePointer[type],
+    haystack: UnsafePointer[Scalar[type]],
     haystack_len: Int,
-    needle: DTypePointer[type],
+    needle: UnsafePointer[Scalar[type]],
     needle_len: Int,
-) -> DTypePointer[type]:
+) -> UnsafePointer[Scalar[type]]:
     if not needle_len:
         return haystack
     if needle_len > haystack_len:
-        return DTypePointer[type]()
+        return UnsafePointer[Scalar[type]]()
     if needle_len == 1:
         return _memrchr[type](haystack, needle[0], haystack_len)
-    for i in range(haystack_len - needle_len, -1, -1):
+    for i in reversed(range(haystack_len - needle_len + 1)):
         if haystack[i] != needle[0]:
             continue
         if memcmp(haystack + i + 1, needle + 1, needle_len - 1) == 0:
             return haystack + i
-    return DTypePointer[type]()
+    return UnsafePointer[Scalar[type]]()

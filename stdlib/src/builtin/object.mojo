@@ -16,26 +16,11 @@ These are Mojo built-ins, so you don't need to import them.
 """
 
 from collections import Dict, List
-from os.atomic import Atomic
-from sys.intrinsics import _mlirtype_is_eq
+from sys.intrinsics import _type_is_eq
 
-from memory import memcmp, memcpy
-from memory.unsafe import DTypePointer, Pointer
+from memory import Arc, memcmp, memcpy
 
-from utils import StringRef
-from utils.loop import unroll
-
-from .io import _printf, _put
-
-# ===----------------------------------------------------------------------=== #
-# Utilities
-# ===----------------------------------------------------------------------=== #
-
-
-@always_inline
-fn _min(a: Int, b: Int) -> Int:
-    return a if a < b else b
-
+from utils import StringRef, Variant
 
 # ===----------------------------------------------------------------------=== #
 # _ObjectImpl
@@ -43,32 +28,38 @@ fn _min(a: Int, b: Int) -> Int:
 
 
 @register_passable("trivial")
-struct _NoneMarker:
+struct _NoneMarker(CollectionElementNew):
     """This is a trivial class to indicate that an object is `None`."""
 
-    pass
+    fn __init__(inout self, *, other: Self):
+        pass
 
 
 @register_passable("trivial")
-struct _ImmutableString:
+struct _ImmutableString(CollectionElement, CollectionElementNew):
     """Python strings are immutable. This class is marked as trivially register
     passable because its memory will be managed by `_ObjectImpl`. It is a
     pointer and integer pair. Memory will be dynamically allocated.
     """
 
-    var data: Pointer[Int8]
+    var data: UnsafePointer[UInt8]
     """The pointer to the beginning of the string contents. It is not
     null-terminated."""
     var length: Int
     """The length of the string."""
 
     @always_inline
-    fn __init__(data: Pointer[Int8], length: Int) -> Self:
-        return Self {data: data, length: length}
+    fn __init__(inout self, data: UnsafePointer[UInt8], length: Int):
+        self.data = data
+        self.length = length
+
+    @always_inline
+    fn __init__(inout self, *, other: Self):
+        self = other
 
     @always_inline
     fn string_compare(self, rhs: _ImmutableString) -> Int:
-        var res = memcmp(self.data, rhs.data, _min(self.length, rhs.length))
+        var res = memcmp(self.data, rhs.data, min(self.length, rhs.length))
         if res != 0:
             return -1 if res < 0 else 1
         if self.length == rhs.length:
@@ -77,50 +68,42 @@ struct _ImmutableString:
 
 
 struct _RefCountedList:
-    """Python objects have the behaviour that bool, int, float, and str are
+    """Python objects have the behavior that bool, int, float, and str are
     passed by value but lists and dictionaries are passed by reference. In order
-    to model this behaviour, lists and dictionaries are implemented as
+    to model this behavior, lists and dictionaries are implemented as
     ref-counted data types.
     """
 
-    fn __init__(inout self):
-        self.refcount = 1
-        self.impl = List[_ObjectImpl]()
-
-    var refcount: Atomic[DType.index]
-    """The number of live references to the list."""
-    var impl: List[_ObjectImpl]
+    var impl: Arc[List[_ObjectImpl]]
     """The list value."""
+
+    fn __init__(inout self):
+        self.impl = Arc[List[_ObjectImpl]](List[_ObjectImpl]())
 
 
 @register_passable("trivial")
-struct _RefCountedListRef:
+struct _RefCountedListRef(CollectionElement, CollectionElementNew):
     # FIXME(#3335): Use indirection to avoid a recursive struct definition.
-    var lst: Pointer[NoneType]
+    var lst: UnsafePointer[NoneType]
     """The reference to the list."""
 
     @always_inline
-    fn __init__() -> Self:
-        var ptr = Pointer[_RefCountedList].alloc(1)
+    fn __init__(inout self):
+        var ptr = UnsafePointer[_RefCountedList].alloc(1)
         __get_address_as_uninit_lvalue(ptr.address) = _RefCountedList()
-        return Self {lst: ptr.bitcast[NoneType]()}
+        self.lst = ptr.bitcast[NoneType]()
+
+    @always_inline
+    fn __init__(inout self, *, other: Self):
+        self.lst = other.lst
 
     @always_inline
     fn copy(self) -> Self:
-        _ = self.lst.bitcast[_RefCountedList]()[].refcount.fetch_add(1)
+        _ = self.lst.bitcast[_RefCountedList]()[].impl
         return Self {lst: self.lst}
 
     fn release(self):
-        var ptr = self.lst.bitcast[_RefCountedList]()
-        var prev = ptr[].refcount.fetch_sub(1)
-        if prev != 1:
-            return
-
-        # Run the destructor on the list elements and then destroy the list.
-        var list = __get_address_as_owned_value(ptr.address).impl
-        for i in range(len(list)):
-            list[i].destroy()
-        ptr.free()
+        var ptr = self.lst.bitcast[_RefCountedList]()[].impl
 
 
 struct _RefCountedAttrsDict:
@@ -131,20 +114,19 @@ struct _RefCountedAttrsDict:
     directly with `x.attr`, the key will always be a `StringLiteral`.
     """
 
-    var refcount: Atomic[DType.index]
-    """The number of live references to the attribute dictionary."""
-    var impl: Dict[StringLiteral, _ObjectImpl]
+    var impl: Arc[Dict[StringLiteral, _ObjectImpl]]
     """The implementation of the map."""
 
     fn __init__(inout self):
-        self.refcount = 1
-        self.impl = Dict[StringLiteral, _ObjectImpl]()
+        self.impl = Arc[Dict[StringLiteral, _ObjectImpl]](
+            Dict[StringLiteral, _ObjectImpl]()
+        )
 
     @always_inline
     fn set(inout self, key: StringLiteral, value: _ObjectImpl) raises:
-        if key in self.impl:
-            self.impl[key].destroy()
-            self.impl[key] = value
+        if key in self.impl[]:
+            self.impl[][key].destroy()
+            self.impl[][key] = value
             return
         raise Error(
             "AttributeError: Object does not have an attribute of name '"
@@ -154,7 +136,7 @@ struct _RefCountedAttrsDict:
 
     @always_inline
     fn get(self, key: StringLiteral) raises -> _ObjectImpl:
-        var iter = self.impl.find(key)
+        var iter = self.impl[].find(key)
         if iter:
             return iter.value()
         raise Error(
@@ -184,55 +166,57 @@ struct Attr:
             value: The object value of the attribute.
         """
         self.key = key
-        self.value = value ^
+        self.value = value^
 
 
 @register_passable("trivial")
-struct _RefCountedAttrsDictRef:
+struct _RefCountedAttrsDictRef(CollectionElement, CollectionElementNew):
     # FIXME(#3335): Use indirection to avoid a recursive struct definition.
     # FIXME(#12604): Distinguish this type from _RefCountedListRef.
-    var attrs: Pointer[Int8]
+    var attrs: UnsafePointer[Int8]
     """The reference to the dictionary."""
 
     @always_inline
-    fn __init__(values: VariadicListMem[Attr, _, _]) -> Self:
-        var ptr = Pointer[_RefCountedAttrsDict].alloc(1)
+    fn __init__(inout self, values: VariadicListMem[Attr, _]):
+        var ptr = UnsafePointer[_RefCountedAttrsDict].alloc(1)
         __get_address_as_uninit_lvalue(ptr.address) = _RefCountedAttrsDict()
         # Elements can only be added on construction.
         for i in range(len(values)):
-            ptr[].impl._insert(values[i].key, values[i].value._value.copy())
+            ptr[].impl[]._insert(values[i].key, values[i].value._value.copy())
 
-        return Self {attrs: ptr.bitcast[Int8]()}
+        self.attrs = ptr.bitcast[Int8]()
+
+    @always_inline
+    fn __init__(inout self, *, other: Self):
+        self = other
 
     @always_inline
     fn copy(self) -> Self:
-        _ = self.attrs.bitcast[_RefCountedAttrsDict]()[].refcount.fetch_add(1)
+        _ = self.attrs.bitcast[_RefCountedAttrsDict]()[].impl
         return Self {attrs: self.attrs}
 
     fn release(self):
-        var ptr = self.attrs.bitcast[_RefCountedAttrsDict]()
-        var prev = ptr[].refcount.fetch_sub(1)
-        if prev != 1:
-            return
-
-        # destroy the container.
-        ptr.free()
+        var ptr = self.attrs.bitcast[_RefCountedAttrsDict]()[].impl
 
 
 @register_passable("trivial")
-struct _Function:
+struct _Function(CollectionElement, CollectionElementNew):
     # The MLIR function type has two arguments:
     # 1. The self value, or the single argument.
     # 2. None, or an additional argument.
-    var value: Pointer[Int16]
+    var value: UnsafePointer[Int16]
     """The function pointer."""
 
     @always_inline
-    fn __init__[FnT: AnyRegType](value: FnT) -> Self:
+    fn __init__[FnT: AnyTrivialRegType](inout self, value: FnT):
         # FIXME: No "pointer bitcast" for signature function pointers.
-        var f = Pointer[Int16]()
-        Pointer(__get_lvalue_as_address(f)).bitcast[FnT]().store(value)
-        return Self {value: f}
+        var f = UnsafePointer[Int16]()
+        UnsafePointer.address_of(f).bitcast[FnT]()[] = value
+        self.value = f
+
+    @always_inline
+    fn __init__(inout self, *, other: Self):
+        self.value = other.value
 
     alias fn0 = fn () raises -> object
     """Nullary function type."""
@@ -245,41 +229,34 @@ struct _Function:
 
     @always_inline
     fn invoke(owned self) raises -> object:
-        return (
-            Pointer(__get_lvalue_as_address(self.value))
-            .bitcast[Self.fn0]()
-            .load()()
-        )
+        return UnsafePointer.address_of(self.value).bitcast[Self.fn0]()[]()
 
     @always_inline
     fn invoke(owned self, arg0: object) raises -> object:
-        return (
-            Pointer(__get_lvalue_as_address(self.value))
-            .bitcast[Self.fn1]()
-            .load()(arg0)
-        )
+        return UnsafePointer.address_of(self.value).bitcast[Self.fn1]()[](arg0)
 
     @always_inline
     fn invoke(owned self, arg0: object, arg1: object) raises -> object:
-        return (
-            Pointer(__get_lvalue_as_address(self.value))
-            .bitcast[Self.fn2]()
-            .load()(arg0, arg1)
+        return UnsafePointer.address_of(self.value).bitcast[Self.fn2]()[](
+            arg0, arg1
         )
 
     @always_inline
     fn invoke(
         owned self, arg0: object, arg1: object, arg2: object
     ) raises -> object:
-        return (
-            Pointer(__get_lvalue_as_address(self.value))
-            .bitcast[Self.fn3]()
-            .load()(arg0, arg1, arg2)
+        return UnsafePointer.address_of(self.value).bitcast[Self.fn3]()[](
+            arg0, arg1, arg2
         )
 
 
-@register_passable
-struct _ObjectImpl(CollectionElement, Stringable):
+struct _ObjectImpl(
+    CollectionElement,
+    CollectionElementNew,
+    Stringable,
+    Representable,
+    Formattable,
+):
     """This class is the underlying implementation of the value of an `object`.
     It is a variant of primitive types and pointers to implementations of more
     complex types.
@@ -288,24 +265,15 @@ struct _ObjectImpl(CollectionElement, Stringable):
     TODO: These should be BigInt and BigFloat one day.
     """
 
-    alias type = __mlir_type[
-        `!kgen.variant<`,
+    alias type = Variant[
         _NoneMarker,
-        `, `,
         Bool,
-        `, `,
         Int64,
-        `, `,
         Float64,
-        `, `,
         _ImmutableString,
-        `, `,
         _RefCountedListRef,
-        `, `,
         _Function,
-        `, `,
         _RefCountedAttrsDictRef,
-        `>`,
     ]
     """The variant value type."""
     var value: Self.type
@@ -336,69 +304,70 @@ struct _ObjectImpl(CollectionElement, Stringable):
     # ===------------------------------------------------------------------=== #
 
     @always_inline
-    fn __init__(value: Self.type) -> Self:
-        return Self {value: value}
+    fn __init__(inout self, value: Self.type):
+        self.value = value
 
     @always_inline
-    fn __init__() -> Self:
-        return __mlir_op.`kgen.variant.create`[
-            _type = Self.type, index = Self.none.value
-        ](_NoneMarker {})
+    fn __init__(inout self):
+        self.value = Self.type(_NoneMarker {})
 
     @always_inline
-    fn __init__(value: Bool) -> Self:
-        return __mlir_op.`kgen.variant.create`[
-            _type = Self.type, index = Self.bool.value
-        ](value)
+    fn __init__(inout self, value: Bool):
+        self.value = Self.type(value)
 
     @always_inline
-    fn __init__[dt: DType](value: SIMD[dt, 1]) -> Self:
+    fn __init__[dt: DType](inout self, value: SIMD[dt, 1]):
         @parameter
         if dt.is_integral():
-            return __mlir_op.`kgen.variant.create`[
-                _type = Self.type, index = Self.int.value
-            ](value.cast[DType.int64]())
+            self.value = Self.type(value)
         else:
-            return __mlir_op.`kgen.variant.create`[
-                _type = Self.type, index = Self.float.value
-            ](value.cast[DType.float64]())
+            self.value = Self.type(value)
 
     @always_inline
-    fn __init__(value: _ImmutableString) -> Self:
-        return __mlir_op.`kgen.variant.create`[
-            _type = Self.type, index = Self.str.value
-        ](value)
+    fn __init__(inout self, value: _ImmutableString):
+        self.value = Self.type(value)
 
     @always_inline
-    fn __init__(value: _RefCountedListRef) -> Self:
-        return __mlir_op.`kgen.variant.create`[
-            _type = Self.type, index = Self.list.value
-        ](value)
+    fn __init__(inout self, value: _RefCountedListRef):
+        self.value = Self.type(value)
 
     @always_inline
-    fn __init__(value: _Function) -> Self:
-        return __mlir_op.`kgen.variant.create`[
-            _type = Self.type, index = Self.function.value
-        ](value)
+    fn __init__(inout self, value: _Function):
+        self.value = Self.type(value)
 
     @always_inline
-    fn __init__(value: _RefCountedAttrsDictRef) -> Self:
-        return __mlir_op.`kgen.variant.create`[
-            _type = Self.type, index = Self.obj.value
-        ](value)
+    fn __init__(inout self, value: _RefCountedAttrsDictRef):
+        self.value = Self.type(value)
 
     @always_inline
-    fn __copyinit__(self) -> Self:
-        return self.value
+    fn __init__(inout self, *, other: Self):
+        """Copy the object.
+
+        Args:
+            other: The value to copy.
+        """
+        self = other.value
+
+    @always_inline
+    fn __copyinit__(inout self, existing: Self):
+        self = existing.value
+
+    @always_inline
+    fn __moveinit__(inout self, owned other: Self):
+        self = other.value^
 
     @always_inline
     fn copy(self) -> Self:
         if self.is_str():
             var str = self.get_as_string()
             var impl = _ImmutableString(
-                Pointer[Int8].alloc(str.length), str.length
+                UnsafePointer[UInt8].alloc(str.length), str.length
             )
-            memcpy(impl.data, DTypePointer[DType.int8](str.data), str.length)
+            memcpy(
+                dest=impl.data,
+                src=str.data,
+                count=str.length,
+            )
             return impl
         if self.is_list():
             return self.get_as_list().copy()
@@ -421,27 +390,27 @@ struct _ObjectImpl(CollectionElement, Stringable):
 
     @always_inline
     fn is_none(self) -> Bool:
-        return __mlir_op.`kgen.variant.is`[index = Self.none.value](self.value)
+        return self.value.isa[_NoneMarker]()
 
     @always_inline
     fn is_bool(self) -> Bool:
-        return __mlir_op.`kgen.variant.is`[index = Self.bool.value](self.value)
+        return self.value.isa[Bool]()
 
     @always_inline
     fn is_int(self) -> Bool:
-        return __mlir_op.`kgen.variant.is`[index = Self.int.value](self.value)
+        return self.value.isa[Int64]()
 
     @always_inline
     fn is_float(self) -> Bool:
-        return __mlir_op.`kgen.variant.is`[index = Self.float.value](self.value)
+        return self.value.isa[Float64]()
 
     @always_inline
     fn is_str(self) -> Bool:
-        return __mlir_op.`kgen.variant.is`[index = Self.str.value](self.value)
+        return self.value.isa[_ImmutableString]()
 
     @always_inline
     fn is_list(self) -> Bool:
-        return __mlir_op.`kgen.variant.is`[index = Self.list.value](self.value)
+        return self.value.isa[_RefCountedListRef]()
 
     @always_inline
     fn is_dict(self) -> Bool:
@@ -449,49 +418,40 @@ struct _ObjectImpl(CollectionElement, Stringable):
 
     @always_inline
     fn is_func(self) -> Bool:
-        return __mlir_op.`kgen.variant.is`[index = Self.function.value](
-            self.value
-        )
+        return self.value.isa[_Function]()
 
     @always_inline
     fn is_obj(self) -> Bool:
-        return __mlir_op.`kgen.variant.is`[index = Self.obj.value](self.value)
+        return self.value.isa[_RefCountedAttrsDictRef]()
 
+    # get a copy
     @always_inline
     fn get_as_bool(self) -> Bool:
-        return __mlir_op.`kgen.variant.take`[index = Self.bool.value](
-            self.value
-        )
+        return self.value[Bool]
 
     @always_inline
     fn get_as_int(self) -> Int64:
-        return __mlir_op.`kgen.variant.take`[index = Self.int.value](self.value)
+        return self.value[Int64]
 
     @always_inline
     fn get_as_float(self) -> Float64:
-        return __mlir_op.`kgen.variant.take`[index = Self.float.value](
-            self.value
-        )
+        return self.value[Float64]
 
     @always_inline
     fn get_as_string(self) -> _ImmutableString:
-        return __mlir_op.`kgen.variant.take`[index = Self.str.value](self.value)
+        return self.value[_ImmutableString]
 
     @always_inline
     fn get_as_list(self) -> _RefCountedListRef:
-        return __mlir_op.`kgen.variant.take`[index = Self.list.value](
-            self.value
-        )
+        return self.value[_RefCountedListRef]
 
     @always_inline
     fn get_as_func(self) -> _Function:
-        return __mlir_op.`kgen.variant.take`[index = Self.function.value](
-            self.value
-        )
+        return self.value[_Function]
 
     @always_inline
     fn get_obj_attrs(self) -> _RefCountedAttrsDictRef:
-        return __mlir_op.`kgen.variant.take`[index = Self.obj.value](self.value)
+        return self.value[_RefCountedAttrsDictRef]
 
     @always_inline
     fn get_type_id(self) -> Int:
@@ -578,7 +538,7 @@ struct _ObjectImpl(CollectionElement, Stringable):
     fn coerce_arithmetic_type(inout lhs: _ObjectImpl, inout rhs: _ObjectImpl):
         """Coerces two values of arithmetic type to the appropriate
         lowest-common denominator type for performing arithmetic operations.
-        Bools are always converted to integers, to match Python's behaviour.
+        Bools are always converted to integers, to match Python's behavior.
         """
         if lhs.is_bool():
             lhs = lhs.convert_bool_to_int()
@@ -591,18 +551,36 @@ struct _ObjectImpl(CollectionElement, Stringable):
         else:
             lhs = lhs.convert_int_to_float()
 
-    fn __str__(self) -> String:
-        """Returns the name (in lowercase) of the specific object type."""
+    @staticmethod
+    fn coerce_integral_type(inout lhs: _ObjectImpl, inout rhs: _ObjectImpl):
+        """Coerces two values of integral type to the appropriate
+        lowest-common denominator type for performing bitwise operations.
+        """
+        if lhs.is_int() == rhs.is_int():
+            return
+        if lhs.is_int():
+            rhs = rhs.convert_bool_to_int()
+        else:
+            lhs = lhs.convert_bool_to_int()
+
+    fn format_to(self, inout writer: Formatter):
+        """Performs conversion to string according to Python
+        semantics.
+        """
         if self.is_none():
-            return "None"
+            writer.write("None")
+            return
         if self.is_bool():
-            return str(self.get_as_bool())
+            writer.write(str(self.get_as_bool()))
+            return
         if self.is_int():
-            return str(self.get_as_int())
+            writer.write(str(self.get_as_int()))
+            return
         if self.is_float():
-            return str(self.get_as_float())
+            writer.write(str(self.get_as_float()))
+            return
         if self.is_str():
-            return (
+            writer.write(
                 "'"
                 + str(
                     StringRef(
@@ -611,64 +589,92 @@ struct _ObjectImpl(CollectionElement, Stringable):
                 )
                 + "'"
             )
+            return
         if self.is_func():
-            return "Function at address " + hex(self.get_as_func().value)
+            writer.write(
+                "Function at address " + hex(int(self.get_as_func().value))
+            )
+            return
         if self.is_list():
-            var res = String("[")
+            writer.write(String("["))
             for j in range(self.get_list_length()):
                 if j != 0:
-                    res += ", "
-                res += str(object(self.get_list_element(j)))
-            res += "]"
-            return res
+                    writer.write(", ")
+                writer.write(str(object(self.get_list_element(j))))
+            writer.write("]")
+            return
 
         var ptr = self.get_obj_attrs_ptr()
-        var res = String("{")
+        writer.write(String("{"))
         var print_sep = False
-        for entry in ptr[].impl.items():
+        for entry in ptr[].impl[].items():
             if print_sep:
-                res += ", "
-            res += (
+                writer.write(", ")
+            writer.write(
                 "'"
                 + str(entry[].key)
                 + "' = "
                 + str(object(entry[].value.copy()))
             )
             print_sep = True
-        res += "}"
-        return res
+        writer.write("}")
+        return
+
+    @no_inline
+    fn __repr__(self) -> String:
+        """Performs conversion to string according to Python
+        semantics.
+
+        Returns:
+            The String representation of the object.
+        """
+        return self.__str__()
+
+    @no_inline
+    fn __str__(self) -> String:
+        """Performs conversion to string according to Python
+        semantics.
+
+        Returns:
+            The String representation of the object.
+        """
+        return String.format_sequence(self)
 
     # ===------------------------------------------------------------------=== #
     # List Functions
     # ===------------------------------------------------------------------=== #
 
     @always_inline
-    fn get_list_ptr(self) -> Pointer[_RefCountedList]:
-        return self.get_as_list().lst.bitcast[_RefCountedList]()
+    fn get_list_ptr(self) -> Arc[List[_ObjectImpl]]:
+        return self.get_as_list().lst.bitcast[_RefCountedList]()[].impl
 
     @always_inline
     fn list_append(self, value: Self):
-        self.get_list_ptr()[].impl.append(value.value)
+        var ptr = self.get_list_ptr()
+        ptr[].append(value.value)
 
     @always_inline
     fn get_list_length(self) -> Int:
-        return len(self.get_list_ptr()[].impl)
+        var ptr = self.get_list_ptr()
+        return len(ptr[])
 
     @always_inline
     fn get_list_element(self, i: Int) -> _ObjectImpl:
-        return self.get_list_ptr()[].impl[i].copy()
+        var ptr = self.get_list_ptr()
+        return ptr[][i].copy()
 
     @always_inline
     fn set_list_element(self, i: Int, value: _ObjectImpl):
-        self.get_list_ptr()[].impl[i].destroy()
-        self.get_list_ptr()[].impl[i] = value
+        var ptr = self.get_list_ptr()
+        ptr[][i].destroy()
+        ptr[][i] = value
 
     # ===------------------------------------------------------------------=== #
     # Object Attribute Functions
     # ===------------------------------------------------------------------=== #
 
     @always_inline
-    fn get_obj_attrs_ptr(self) -> Pointer[_RefCountedAttrsDict]:
+    fn get_obj_attrs_ptr(self) -> UnsafePointer[_RefCountedAttrsDict]:
         return self.get_obj_attrs().attrs.bitcast[_RefCountedAttrsDict]()
 
     @always_inline
@@ -685,7 +691,9 @@ struct _ObjectImpl(CollectionElement, Stringable):
 # ===----------------------------------------------------------------------=== #
 
 
-struct object(IntableRaising, Boolable, Stringable):
+struct object(
+    IntableRaising, ImplicitlyBoolable, Stringable, Representable, Formattable
+):
     """Represents an object without a concrete type.
 
     This is the type of arguments in `def` functions that do not have a type
@@ -797,13 +805,17 @@ struct object(IntableRaising, Boolable, Stringable):
             value: The string value.
         """
         var impl = _ImmutableString(
-            Pointer[Int8].alloc(value.length), value.length
+            UnsafePointer[UInt8].alloc(value.length), value.length
         )
-        memcpy(impl.data, value.data, value.length)
+        memcpy(
+            dest=impl.data,
+            src=value.unsafe_ptr(),
+            count=value.length,
+        )
         self._value = impl
 
     @always_inline
-    fn __init__[*Ts: AnyRegType](inout self, value: ListLiteral[Ts]):
+    fn __init__[*Ts: Movable](inout self, value: ListLiteral[Ts]):
         """Initializes the object from a list literal.
 
         Parameters:
@@ -813,32 +825,28 @@ struct object(IntableRaising, Boolable, Stringable):
             value: The list value.
         """
         self._value = _RefCountedListRef()
-        alias types = VariadicList(Ts)
 
         @parameter
-        @always_inline
-        fn append[i: Int]():
+        for i in range(len(VariadicList(Ts))):
             # We need to rebind the element to one we know how to convert from.
             # FIXME: This doesn't handle implicit conversions or nested lists.
-            alias T = types[i]
+            alias T = Ts[i]
 
             @parameter
-            if _mlirtype_is_eq[T, Int]():
+            if _type_is_eq[T, Int]():
                 self._append(value.get[i, Int]())
-            elif _mlirtype_is_eq[T, Float64]():
+            elif _type_is_eq[T, Float64]():
                 self._append(value.get[i, Float64]())
-            elif _mlirtype_is_eq[T, Bool]():
+            elif _type_is_eq[T, Bool]():
                 self._append(value.get[i, Bool]())
-            elif _mlirtype_is_eq[T, StringRef]():
+            elif _type_is_eq[T, StringRef]():
                 self._append(value.get[i, StringRef]())
-            elif _mlirtype_is_eq[T, StringLiteral]():
+            elif _type_is_eq[T, StringLiteral]():
                 self._append(value.get[i, StringLiteral]())
             else:
                 constrained[
                     False, "cannot convert nested list element to object"
                 ]()
-
-        unroll[append, len(types)]()
 
     @always_inline
     fn __init__(inout self, func: Self.nullary_function):
@@ -953,6 +961,26 @@ struct object(IntableRaising, Boolable, Stringable):
 
         raise "object type cannot be converted to an integer"
 
+    fn __as_bool__(self) -> Bool:
+        """Performs conversion to bool according to Python semantics. Integers
+        and floats are true if they are non-zero, and strings and lists are true
+        if they are non-empty.
+
+        Returns:
+            Whether the object is considered true.
+        """
+        return self.__bool__()
+
+    fn format_to(self, inout writer: Formatter):
+        """Performs conversion to string according to Python
+        semantics.
+
+        Args:
+            writer: The Formatter to write to.
+        """
+        self._value.format_to(writer)
+
+    @no_inline
     fn __str__(self) -> String:
         """Performs conversion to string according to Python
         semantics.
@@ -960,7 +988,17 @@ struct object(IntableRaising, Boolable, Stringable):
         Returns:
             The String representation of the object.
         """
-        return str(self._value)
+        return String.format_sequence(self._value)
+
+    @no_inline
+    fn __repr__(self) -> String:
+        """Performs conversion to string according to Python
+        semantics.
+
+        Returns:
+            The String representation of the object.
+        """
+        return repr(self._value)
 
     # ===------------------------------------------------------------------=== #
     # Comparison Operators
@@ -1019,7 +1057,7 @@ struct object(IntableRaising, Boolable, Stringable):
     fn _list_compare(self, rhs: object) raises -> Int:
         var llen = self._value.get_list_length()
         var rlen = self._value.get_list_length()
-        var cmp_len = _min(llen, rlen)
+        var cmp_len = min(llen, rlen)
         for i in range(cmp_len):
             var lelt: object = self._value.get_list_element(i)
             var relt: object = rhs._value.get_list_element(i)
@@ -1186,6 +1224,12 @@ struct object(IntableRaising, Boolable, Stringable):
         ):
             raise Error("TypeError: not a valid arithmetic type")
 
+    @always_inline
+    fn _arithmetic_integral_type_check(self) raises:
+        """Throws an error if the object is not an integral type."""
+        if not (self._value.is_bool() or self._value.is_int()):
+            raise Error("TypeError: not a valid integral type")
+
     @staticmethod
     @always_inline
     fn _arithmetic_binary_op[
@@ -1210,6 +1254,30 @@ struct object(IntableRaising, Boolable, Stringable):
         if lhsValue.is_float():
             return fp_func(lhsValue.get_as_float(), rhsValue.get_as_float())
         return int_func(lhsValue.get_as_int(), rhsValue.get_as_int())
+
+    @staticmethod
+    @always_inline
+    fn _arithmetic_bitwise_op[
+        int_func: fn (Int64, Int64) -> Int64,
+        bool_func: fn (Bool, Bool) -> Bool,
+    ](lhs: object, rhs: object) raises -> object:
+        """Generic bitwise operator.
+
+        Parameters:
+            int_func: Integer operator.
+            bool_func: Boolean operator.
+
+        Returns:
+            The bitwise operation result.
+        """
+        lhs._arithmetic_integral_type_check()
+        rhs._arithmetic_integral_type_check()
+        var lhsValue = lhs._value
+        var rhsValue = rhs._value
+        _ObjectImpl.coerce_integral_type(lhsValue, rhsValue)
+        if lhsValue.is_int():
+            return int_func(lhsValue.get_as_int(), rhsValue.get_as_int())
+        return bool_func(lhsValue.get_as_bool(), rhsValue.get_as_bool())
 
     @always_inline
     fn __neg__(self) raises -> object:
@@ -1257,9 +1325,11 @@ struct object(IntableRaising, Boolable, Stringable):
             var lhsStr = self._value.get_as_string()
             var rhsStr = rhs._value.get_as_string()
             var length = lhsStr.length + rhsStr.length
-            var impl = _ImmutableString(Pointer[Int8].alloc(length), length)
+            var impl = _ImmutableString(
+                UnsafePointer[UInt8].alloc(length), length
+            )
             memcpy(impl.data, lhsStr.data, lhsStr.length)
-            memcpy(impl.data.offset(lhsStr.length), rhsStr.data, rhsStr.length)
+            memcpy(impl.data + lhsStr.length, rhsStr.data, rhsStr.length)
             var result = object()
             result._value = impl
             return result
@@ -1304,30 +1374,92 @@ struct object(IntableRaising, Boolable, Stringable):
         )
 
     @always_inline
-    fn __pow__(self, rhs: object) raises -> object:
+    fn __pow__(self, exp: object) raises -> object:
         """Exponentiation operator. Valid only for arithmetic types.
 
         Args:
-            rhs: Right hand value.
+            exp: Exponent value.
 
         Returns:
             The left hand value raised to the power of the right hand value.
         """
         return Self._arithmetic_binary_op[Float64.__pow__, Int64.__pow__](
+            self, exp
+        )
+
+    @always_inline
+    fn __mod__(self, rhs: object) raises -> object:
+        """Modulo operator. Valid only for arithmetic types.
+
+        Args:
+            rhs: Right hand value.
+
+        Returns:
+            The left hand value mod the right hand value.
+        """
+        return Self._arithmetic_binary_op[Float64.__mod__, Int64.__mod__](
             self, rhs
         )
 
-    # TODO: __mod__
-    # TODO: __truediv__
-    # TODO: __floordiv__
+    @always_inline
+    fn __truediv__(self, rhs: object) raises -> object:
+        """True division operator. Valid only for arithmetic types.
 
-    # TODO: __lshift__
-    # TODO: __rshift__
+        Args:
+            rhs: Right hand value.
+
+        Returns:
+            The left hand value true divide the right hand value.
+        """
+        return Self._arithmetic_binary_op[
+            Float64.__truediv__, Int64.__truediv__
+        ](self, rhs)
+
+    @always_inline
+    fn __floordiv__(self, rhs: object) raises -> object:
+        """Floor division operator. Valid only for arithmetic types.
+
+        Args:
+            rhs: Right hand value.
+
+        Returns:
+            The left hand value floor divide the right hand value.
+        """
+        return Self._arithmetic_binary_op[
+            Float64.__floordiv__, Int64.__floordiv__
+        ](self, rhs)
+
+    @always_inline
+    fn __lshift__(self, rhs: object) raises -> object:
+        """Left shift operator. Valid only for arithmetic types.
+
+        Args:
+            rhs: Right hand value.
+
+        Returns:
+            The left hand value left shifted by the right hand value.
+        """
+        self._arithmetic_integral_type_check()
+        rhs._arithmetic_integral_type_check()
+        return object(self._value.get_as_int() << rhs._value.get_as_int())
+
+    @always_inline
+    fn __rshift__(self, rhs: object) raises -> object:
+        """Right shift operator. Valid only for arithmetic types.
+
+        Args:
+            rhs: Right hand value.
+
+        Returns:
+            The left hand value right shifted by the right hand value.
+        """
+        self._arithmetic_integral_type_check()
+        rhs._arithmetic_integral_type_check()
+        return object(self._value.get_as_int() >> rhs._value.get_as_int())
 
     @always_inline
     fn __and__(self, rhs: object) raises -> object:
-        """Bool AND operator. If the left hand value is False, return the
-        left-hand value.
+        """Bitwise AND operator.
 
         Args:
             rhs: Right hand value.
@@ -1335,14 +1467,13 @@ struct object(IntableRaising, Boolable, Stringable):
         Returns:
             The current value if it is False.
         """
-        if not self:
-            return self
-        return rhs
+        return Self._arithmetic_bitwise_op[Int64.__and__, Bool.__and__](
+            self, rhs
+        )
 
     @always_inline
     fn __or__(self, rhs: object) raises -> object:
-        """Bool OR operator. If the left hand value is True, return the
-        left-hand value.
+        """Bitwise OR operator.
 
         Args:
             rhs: Right hand value.
@@ -1350,11 +1481,21 @@ struct object(IntableRaising, Boolable, Stringable):
         Returns:
             The current value if it is True.
         """
-        if self:
-            return self
-        return rhs
+        return Self._arithmetic_bitwise_op[Int64.__or__, Bool.__or__](self, rhs)
 
-    # TODO: __xor__
+    @always_inline
+    fn __xor__(self, rhs: object) raises -> object:
+        """Bitwise XOR operator.
+
+        Args:
+            rhs: Right hand value.
+
+        Returns:
+            The current value if it is True.
+        """
+        return Self._arithmetic_bitwise_op[Int64.__xor__, Bool.__xor__](
+            self, rhs
+        )
 
     # ===------------------------------------------------------------------=== #
     # In-Place Operators
@@ -1396,12 +1537,50 @@ struct object(IntableRaising, Boolable, Stringable):
         """
         self = self**rhs
 
-    # TODO: __imod__
-    # TODO: __itruediv__
-    # TODO: __ifloordiv__
+    @always_inline
+    fn __imod__(inout self, rhs: object) raises:
+        """In-place modulo operator.
 
-    # TODO: __ilshift__
-    # TODO: __irshift__
+        Args:
+            rhs: Right hand value.
+        """
+        self = self % rhs
+
+    @always_inline
+    fn __itruediv__(inout self, rhs: object) raises:
+        """In-place true division operator.
+
+        Args:
+            rhs: Right hand value.
+        """
+        self = self / rhs
+
+    @always_inline
+    fn __ifloordiv__(inout self, rhs: object) raises:
+        """In-place floor division operator.
+
+        Args:
+            rhs: Right hand value.
+        """
+        self = self // rhs
+
+    @always_inline
+    fn __ilshift__(inout self, rhs: object) raises:
+        """In-place left shift operator.
+
+        Args:
+            rhs: Right hand value.
+        """
+        self = self << rhs
+
+    @always_inline
+    fn __irshift__(inout self, rhs: object) raises:
+        """In-place right shift operator.
+
+        Args:
+            rhs: Right hand value.
+        """
+        self = self >> rhs
 
     @always_inline
     fn __iand__(inout self, rhs: object) raises:
@@ -1410,8 +1589,7 @@ struct object(IntableRaising, Boolable, Stringable):
         Args:
             rhs: Right hand value.
         """
-        if self:
-            self = rhs
+        self = self & rhs
 
     @always_inline
     fn __ior__(inout self, rhs: object) raises:
@@ -1420,10 +1598,16 @@ struct object(IntableRaising, Boolable, Stringable):
         Args:
             rhs: Right hand value.
         """
-        if not self:
-            self = rhs
+        self = self | rhs
 
-    # TODO: __ixor__
+    @always_inline
+    fn __ixor__(inout self, rhs: object) raises:
+        """In-place XOR operator.
+
+        Args:
+            rhs: Right hand value.
+        """
+        self = self ^ rhs
 
     # ===------------------------------------------------------------------=== #
     # Reversed Operators
@@ -1477,10 +1661,65 @@ struct object(IntableRaising, Boolable, Stringable):
         """
         return lhs**self
 
-    # TODO: __rfloordiv__
-    # TODO: __rmod__
-    # TODO: __rlshift__
-    # TODO: __rrshift__
+    @always_inline
+    fn __rmod__(self, lhs: object) raises -> object:
+        """Reverse modulo operator.
+
+        Args:
+            lhs: Left hand value.
+
+        Returns:
+            The left hand value mod the right hand value.
+        """
+        return lhs % self
+
+    @always_inline
+    fn __rtruediv__(self, lhs: object) raises -> object:
+        """Reverse true division operator.
+
+        Args:
+            lhs: Left hand value.
+
+        Returns:
+            The left hand value divide the right hand value.
+        """
+        return lhs / self
+
+    @always_inline
+    fn __rfloordiv__(self, lhs: object) raises -> object:
+        """Reverse floor division operator.
+
+        Args:
+            lhs: Left hand value.
+
+        Returns:
+            The left hand value floor divide the right hand value.
+        """
+        return lhs // self
+
+    @always_inline
+    fn __rlshift__(self, lhs: object) raises -> object:
+        """Reverse left shift operator.
+
+        Args:
+            lhs: Left hand value.
+
+        Returns:
+            The left hand value left shifted by the right hand value.
+        """
+        return lhs << self
+
+    @always_inline
+    fn __rrshift__(self, lhs: object) raises -> object:
+        """Reverse right shift operator.
+
+        Args:
+            lhs: Left hand value.
+
+        Returns:
+            The left hand value right shifted by the right hand value.
+        """
+        return lhs >> self
 
     @always_inline
     fn __rand__(self, lhs: object) raises -> object:
@@ -1492,9 +1731,7 @@ struct object(IntableRaising, Boolable, Stringable):
         Returns:
             The bitwise AND of the left-hand-side value and this.
         """
-        if not lhs:
-            return lhs
-        return self
+        return lhs & self
 
     @always_inline
     fn __ror__(self, lhs: object) raises -> object:
@@ -1506,11 +1743,19 @@ struct object(IntableRaising, Boolable, Stringable):
         Returns:
             The bitwise OR of the left-hand-side value and this.
         """
-        if lhs:
-            return lhs
-        return self
+        return lhs | self
 
-    # TODO: __rxor__
+    @always_inline
+    fn __rxor__(self, lhs: object) raises -> object:
+        """Reverse XOR operator.
+
+        Args:
+            lhs: Left hand value.
+
+        Returns:
+            The bitwise XOR of the left-hand-side value and this.
+        """
+        return lhs ^ self
 
     # ===------------------------------------------------------------------=== #
     # Interface
@@ -1571,14 +1816,16 @@ struct object(IntableRaising, Boolable, Stringable):
         """
         if self._value.is_obj():
             return object(self._value.get_obj_attr("__getitem__"))(self, i)
+
         if not self._value.is_str() and not self._value.is_list():
             raise Error("TypeError: can only index into lists and strings")
+
         var index = Self._convert_index_to_int(i)
         if self._value.is_str():
-            var impl = _ImmutableString(Pointer[Int8].alloc(1), 1)
-            impl.data.store(
-                self._value.get_as_string().data.offset(index).load()
-            )
+            # Construct a new single-character string.
+            var impl = _ImmutableString(UnsafePointer[UInt8].alloc(1), 1)
+            var char = self._value.get_as_string().data[index]
+            impl.data.init_pointee_move(char)
             return _ObjectImpl(impl)
         return self._value.get_list_element(i._value.get_as_int().value)
 
@@ -1635,6 +1882,14 @@ struct object(IntableRaising, Boolable, Stringable):
 
     @always_inline
     fn __getattr__(self, key: StringLiteral) raises -> object:
+        """Gets the named attribute.
+
+        Args:
+            key: The attribute name.
+
+        Returns:
+            The attribute value.
+        """
         if not self._value.is_obj():
             raise Error(
                 "TypeError: Type '"
@@ -1647,6 +1902,12 @@ struct object(IntableRaising, Boolable, Stringable):
 
     @always_inline
     fn __setattr__(inout self, key: StringLiteral, value: object) raises:
+        """Sets the named attribute.
+
+        Args:
+            key: The attribute name.
+            value: The attribute value.
+        """
         if not self._value.is_obj():
             raise Error(
                 "TypeError: Type '"
@@ -1659,18 +1920,40 @@ struct object(IntableRaising, Boolable, Stringable):
 
     @always_inline
     fn __call__(self) raises -> object:
+        """Calls the object as a function.
+
+        Returns:
+            The function return value, as an object.
+        """
         if not self._value.is_func():
             raise Error("TypeError: Object is not a function")
         return self._value.get_as_func().invoke()
 
     @always_inline
     fn __call__(self, arg0: object) raises -> object:
+        """Calls the object as a function.
+
+        Args:
+            arg0: The first function argument.
+
+        Returns:
+            The function return value, as an object.
+        """
         if not self._value.is_func():
             raise Error("TypeError: Object is not a function")
         return self._value.get_as_func().invoke(arg0)
 
     @always_inline
     fn __call__(self, arg0: object, arg1: object) raises -> object:
+        """Calls the object as a function.
+
+        Args:
+            arg0: The first function argument.
+            arg1: The second function argument.
+
+        Returns:
+            The function return value, as an object.
+        """
         if not self._value.is_func():
             raise Error("TypeError: Object is not a function")
         return self._value.get_as_func().invoke(arg0, arg1)
@@ -1679,47 +1962,16 @@ struct object(IntableRaising, Boolable, Stringable):
     fn __call__(
         self, arg0: object, arg1: object, arg2: object
     ) raises -> object:
+        """Calls the object as a function.
+
+        Args:
+            arg0: The first function argument.
+            arg1: The second function argument.
+            arg2: The third function argument.
+
+        Returns:
+            The function return value, as an object.
+        """
         if not self._value.is_func():
             raise Error("TypeError: Object is not a function")
         return self._value.get_as_func().invoke(arg0, arg1, arg2)
-
-    # ===------------------------------------------------------------------=== #
-    # Debugging
-    # ===------------------------------------------------------------------=== #
-
-    fn print(self):
-        """Prints the value of the object."""
-        if self._value.is_none():
-            _put("None")
-        elif self._value.is_bool():
-            if self._value.get_as_bool():
-                _put("True")
-            else:
-                _put("False")
-        elif self._value.is_int():
-            _put(self._value.get_as_int())
-        elif self._value.is_float():
-            _put(self._value.get_as_float())
-        elif self._value.is_str():
-            var str = self._value.get_as_string()
-            _printf("'%.*s'", str.length, str.data)
-        elif self._value.is_list():
-            _put("[")
-            for j in range(self._value.get_list_length()):
-                if j != 0:
-                    _put(", ")
-                object(self._value.get_list_element(j)).print()
-            _put("]")
-        elif self._value.is_func():
-            _printf("function at %p", self._value.get_as_func().value.address)
-        else:
-            _put("{")
-            var ptr = self._value.get_obj_attrs_ptr()
-            var k = 0
-            for entry in ptr[].impl.items():
-                if k != 0:
-                    _put(", ")
-                _printf("'%s' = ", entry[].key)
-                object(entry[].value.copy()).print()
-                k += 1
-            _put("}")

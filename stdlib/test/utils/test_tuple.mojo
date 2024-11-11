@@ -10,21 +10,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
-# RUN: %mojo -debug-level full %s
+# RUN: %mojo %s
 
 from testing import assert_equal, assert_false, assert_true
 
-from utils.index import StaticIntTuple
-from utils.static_tuple import StaticTuple
+from utils import StaticIntTuple, StaticTuple
+from test_utils import ValueDestructorRecorder
 
 
 def test_static_tuple():
-    print("== test_static_tuple")
-
     var tup1 = StaticTuple[Int, 1](1)
     assert_equal(tup1[0], 1)
 
-    var tup2 = StaticTuple[Int, 2](1)
+    var tup2 = StaticTuple[Int, 2](1, 1)
     assert_equal(tup2[0], 1)
     assert_equal(tup2[1], 1)
 
@@ -35,11 +33,9 @@ def test_static_tuple():
 
     assert_equal(tup3[0], 1)
     assert_equal(tup3[Int(0)], 1)
-    assert_equal(tup3[Int64(0)], 1)
 
 
 def test_static_int_tuple():
-    print("== test_static_int_tuple")
     assert_equal(str(StaticIntTuple[1](1)), "(1,)")
 
     assert_equal(str(StaticIntTuple[3](2)), "(2, 2, 2)")
@@ -76,31 +72,11 @@ def test_static_int_tuple():
 
 
 def test_tuple_literal():
-    print("== test_tuple_literal\n")
     assert_equal(len((1, 2, (3, 4), 5)), 4)
     assert_equal(len(()), 0)
-
-
-def test_tuple_pointer():
-    var tup = StaticTuple[Int, 3](0, 0, 0)
-
-    assert_equal(tup[0], 0)
-    assert_equal(tup[1], 0)
-    assert_equal(tup[2], 0)
-
-    # Test mutating a tuple through its `as_ptr()` pointer
-    var ptr = tup.as_ptr()
-    ptr[0] = 1
-    ptr[1] = 2
-    ptr[2] = 3
-
-    assert_equal(tup[0], 1)
-    assert_equal(tup[1], 2)
-    assert_equal(tup[2], 3)
 
 
 def main():
     test_static_tuple()
     test_static_int_tuple()
     test_tuple_literal()
-    test_tuple_pointer()

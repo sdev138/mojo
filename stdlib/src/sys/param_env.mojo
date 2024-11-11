@@ -16,7 +16,7 @@ You can use these functions to set parameter values or runtime constants based o
 name-value pairs defined on the command line. For example:
 
 ```mojo
-  from sys.param_env import is_defined
+  from sys import is_defined
 
   alias float_type = DType.float32 if is_defined["FLOAT32"]() else DType.float64
 
@@ -36,7 +36,7 @@ The `mojo run` command also supports the `-D` option.
 You can import these APIs from the `sys` package. For example:
 
 ```mojo
-from sys.param_env import is_defined
+from sys import is_defined
 ```
 """
 
@@ -50,10 +50,7 @@ fn is_defined[name: StringLiteral]() -> Bool:
     Returns:
         True if the name is defined.
     """
-    alias result = __mlir_attr[
-        `#kgen.param.expr<get_env, `, name.value, `> : i1`
-    ]
-    return result
+    return __mlir_attr[`#kgen.param.expr<get_env, `, name.value, `> : i1`]
 
 
 fn env_get_int[name: StringLiteral]() -> Int:
@@ -66,10 +63,7 @@ fn env_get_int[name: StringLiteral]() -> Int:
     Returns:
         An integer parameter value.
     """
-    alias result = __mlir_attr[
-        `#kgen.param.expr<get_env, `, name.value, `> : index`
-    ]
-    return result
+    return __mlir_attr[`#kgen.param.expr<get_env, `, name.value, `> : index`]
 
 
 fn env_get_int[name: StringLiteral, default: Int]() -> Int:
@@ -101,10 +95,9 @@ fn env_get_string[name: StringLiteral]() -> StringLiteral:
     Returns:
         A string parameter value.
     """
-    alias result = __mlir_attr[
+    return __mlir_attr[
         `#kgen.param.expr<get_env, `, name.value, `> : !kgen.string`
     ]
-    return result
 
 
 fn env_get_string[

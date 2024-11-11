@@ -22,7 +22,7 @@ from sys import argv
 
 from sys import external_call
 
-from memory.unsafe import Pointer
+from memory import UnsafePointer
 
 from utils import StringRef
 
@@ -35,7 +35,5 @@ fn argv() -> VariadicList[StringRef]:
         The list of command line arguments provided when mojo was invoked.
     """
     var result = VariadicList[StringRef]("")
-    external_call["KGEN_CompilerRT_GetArgV", NoneType](
-        Pointer[VariadicList[StringRef]].address_of(result)
-    )
+    external_call["KGEN_CompilerRT_GetArgV", NoneType](Reference(result))
     return result

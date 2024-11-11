@@ -99,6 +99,95 @@ trait Copyable:
         ...
 
 
+trait ExplicitlyCopyable:
+    """The ExplicitlyCopyable trait denotes a type whose value can be copied
+    explicitly.
+
+    Unlike `Copyable`, which denotes types that are _implicitly_ copyable, an
+    explicitly copyable type can only be copied when the explicit copy
+    initializer is called intentionally by the programmer.
+
+    An explicit copy initializer is just a normal `__init__` method that takes
+    a `borrowed` argument of `Self`.
+
+    Example implementing the `ExplicitlyCopyable` trait on `Foo` which requires
+    the `__init__(.., Self)` method:
+
+    ```mojo
+    struct Foo(ExplicitlyCopyable):
+        var s: String
+
+        fn __init__(inout self, s: String):
+            self.s = s
+
+        fn __init__(inout self, copy: Self):
+            print("explicitly copying value")
+            self.s = copy.s
+    ```
+
+    You can now copy objects inside a generic function:
+
+    ```mojo
+    fn copy_return[T: ExplicitlyCopyable](foo: T) -> T:
+        var copy = T(foo)
+        return copy
+
+    var foo = Foo("test")
+    var res = copy_return(foo)
+    ```
+
+    ```plaintext
+    explicitly copying value
+    ```
+    """
+
+    # Note:
+    #   `other` is a required named argument for the time being to minimize
+    #   implicit conversion overload ambiguity errors, particularly
+    #   with SIMD and Int.
+    fn __init__(inout self, *, other: Self):
+        """Explicitly construct a deep copy of the provided value.
+
+        Args:
+            other: The value to copy.
+        """
+        ...
+
+
+trait Defaultable:
+    """The `Defaultable` trait describes a type with a default constructor.
+
+    Implementing the `Defaultable` trait requires the type to define
+    an `__init__` method with no arguments:
+
+    ```mojo
+    struct Foo(Defaultable):
+        var s: String
+
+        fn __init__(inout self):
+            self.s = "default"
+    ```
+
+    You can now construct a generic `Defaultable` type:
+
+    ```mojo
+    fn default_init[T: Defaultable]() -> T:
+        return T()
+
+    var foo = default_init[Foo]()
+    print(foo.s)
+    ```
+
+    ```plaintext
+    default
+    ```
+    """
+
+    fn __init__(inout self):
+        """Create a default instance of the value."""
+        ...
+
+
 trait CollectionElement(Copyable, Movable):
     """The CollectionElement trait denotes a trait composition
     of the `Copyable` and `Movable` traits.
@@ -106,6 +195,89 @@ trait CollectionElement(Copyable, Movable):
     This is useful to have as a named entity since Mojo does not
     currently support anonymous trait compositions to constrain
     on `Copyable & Movable` in the parameter.
+    """
+
+    pass
+
+
+trait CollectionElementNew(ExplicitlyCopyable, Movable):
+    """A temporary explicitly-copyable alternative to `CollectionElement`.
+
+    This trait will eventually replace `CollectionElement`.
+    """
+
+    pass
+
+
+trait StringableCollectionElement(CollectionElement, Stringable):
+    """The StringableCollectionElement trait denotes a trait composition
+    of the `CollectionElement` and `Stringable` traits.
+
+    This is useful to have as a named entity since Mojo does not
+    currently support anonymous trait compositions to constrain
+    on `CollectionElement & Stringable` in the parameter.
+    """
+
+    pass
+
+
+trait EqualityComparableCollectionElement(
+    CollectionElement, EqualityComparable
+):
+    """
+    This trait denotes a trait composition of the `CollectionElement` and `EqualityComparable` traits.
+
+    This is useful to have as a named entity since Mojo does not
+    currently support anonymous trait compositions to constrain
+    on `CollectionElement & EqualityComparable` in the parameter.
+    """
+
+    pass
+
+
+trait ComparableCollectionElement(CollectionElement, Comparable):
+    """
+    This trait denotes a trait composition of the `CollectionElement` and `Comparable` traits.
+
+    This is useful to have as a named entity since Mojo does not
+    currently support anonymous trait compositions to constrain
+    on `CollectionElement & Comparable` in the parameter.
+    """
+
+    pass
+
+
+trait RepresentableCollectionElement(CollectionElement, Representable):
+    """The RepresentableCollectionElement trait denotes a trait composition
+    of the `CollectionElement` and `Representable` traits.
+
+    This is useful to have as a named entity since Mojo does not
+    currently support anonymous trait compositions to constrain
+    on `CollectionElement & Representable` in the parameter.
+    """
+
+    pass
+
+
+trait BoolableCollectionElement(Boolable, CollectionElement):
+    """The BoolableCollectionElement trait denotes a trait composition
+    of the `Boolable` and `CollectionElement` traits.
+
+    This is useful to have as a named entity since Mojo does not
+    currently support anonymous trait compositions to constrain
+    on `Boolable & CollectionElement` in the parameter.
+    """
+
+    pass
+
+
+trait BoolableKeyElement(Boolable, KeyElement):
+    """The BoolableKeyElement trait denotes a trait composition
+    of the `Boolable` and `KeyElement` traits.
+
+    This is useful to have as a named entity since Mojo does not
+    currently support anonymous trait compositions to constrain
+    on `Boolable & KeyElement` in the parameter.
     """
 
     pass

@@ -22,7 +22,7 @@ from sys.intrinsics import _mlirtype_is_eq
 @always_inline("nodebug")
 fn inlined_assembly[
     asm: StringLiteral,
-    result_type: AnyRegType,
+    result_type: AnyTrivialRegType,
     /,
     *,
     constraints: StringLiteral = "r",
@@ -73,9 +73,9 @@ fn inlined_assembly[
 
 @always_inline("nodebug")
 fn inlined_assembly[
+    arg0_type: AnyTrivialRegType, //,
     asm: StringLiteral,
-    result_type: AnyRegType,
-    arg0_type: AnyRegType,
+    result_type: AnyTrivialRegType,
     /,
     *,
     constraints: StringLiteral = "r",
@@ -126,10 +126,10 @@ fn inlined_assembly[
 
 @always_inline("nodebug")
 fn inlined_assembly[
+    arg0_type: AnyTrivialRegType,
+    arg1_type: AnyTrivialRegType, //,
     asm: StringLiteral,
-    result_type: AnyRegType,
-    arg0_type: AnyRegType,
-    arg1_type: AnyRegType,
+    result_type: AnyTrivialRegType,
     /,
     *,
     constraints: StringLiteral = "r,r",
@@ -180,11 +180,11 @@ fn inlined_assembly[
 
 @always_inline("nodebug")
 fn inlined_assembly[
+    arg0_type: AnyTrivialRegType,
+    arg1_type: AnyTrivialRegType,
+    arg2_type: AnyTrivialRegType, //,
     asm: StringLiteral,
-    result_type: AnyRegType,
-    arg0_type: AnyRegType,
-    arg1_type: AnyRegType,
-    arg2_type: AnyRegType,
+    result_type: AnyTrivialRegType,
     /,
     *,
     constraints: StringLiteral = "r,r,r",
@@ -235,12 +235,12 @@ fn inlined_assembly[
 
 @always_inline("nodebug")
 fn inlined_assembly[
+    arg0_type: AnyTrivialRegType,
+    arg1_type: AnyTrivialRegType,
+    arg2_type: AnyTrivialRegType,
+    arg3_type: AnyTrivialRegType, //,
     asm: StringLiteral,
-    result_type: AnyRegType,
-    arg0_type: AnyRegType,
-    arg1_type: AnyRegType,
-    arg2_type: AnyRegType,
-    arg3_type: AnyRegType,
+    result_type: AnyTrivialRegType,
     /,
     *,
     constraints: StringLiteral = "r,r,r,r",
@@ -293,13 +293,13 @@ fn inlined_assembly[
 
 @always_inline("nodebug")
 fn inlined_assembly[
+    arg0_type: AnyTrivialRegType,
+    arg1_type: AnyTrivialRegType,
+    arg2_type: AnyTrivialRegType,
+    arg3_type: AnyTrivialRegType,
+    arg4_type: AnyTrivialRegType, //,
     asm: StringLiteral,
-    result_type: AnyRegType,
-    arg0_type: AnyRegType,
-    arg1_type: AnyRegType,
-    arg2_type: AnyRegType,
-    arg3_type: AnyRegType,
-    arg4_type: AnyRegType,
+    result_type: AnyTrivialRegType,
     /,
     *,
     constraints: StringLiteral = "r,r,r,r,r",
@@ -356,14 +356,14 @@ fn inlined_assembly[
 
 @always_inline("nodebug")
 fn inlined_assembly[
+    arg0_type: AnyTrivialRegType,
+    arg1_type: AnyTrivialRegType,
+    arg2_type: AnyTrivialRegType,
+    arg3_type: AnyTrivialRegType,
+    arg4_type: AnyTrivialRegType,
+    arg5_type: AnyTrivialRegType, //,
     asm: StringLiteral,
-    result_type: AnyRegType,
-    arg0_type: AnyRegType,
-    arg1_type: AnyRegType,
-    arg2_type: AnyRegType,
-    arg3_type: AnyRegType,
-    arg4_type: AnyRegType,
-    arg5_type: AnyRegType,
+    result_type: AnyTrivialRegType,
     /,
     *,
     constraints: StringLiteral = "r,r,r,r,r,r",
@@ -421,15 +421,15 @@ fn inlined_assembly[
 
 @always_inline("nodebug")
 fn inlined_assembly[
+    arg0_type: AnyTrivialRegType,
+    arg1_type: AnyTrivialRegType,
+    arg2_type: AnyTrivialRegType,
+    arg3_type: AnyTrivialRegType,
+    arg4_type: AnyTrivialRegType,
+    arg5_type: AnyTrivialRegType,
+    arg6_type: AnyTrivialRegType, //,
     asm: StringLiteral,
-    result_type: AnyRegType,
-    arg0_type: AnyRegType,
-    arg1_type: AnyRegType,
-    arg2_type: AnyRegType,
-    arg3_type: AnyRegType,
-    arg4_type: AnyRegType,
-    arg5_type: AnyRegType,
-    arg6_type: AnyRegType,
+    result_type: AnyTrivialRegType,
     /,
     *,
     constraints: StringLiteral = "r,r,r,r,r,r,r",
@@ -488,16 +488,16 @@ fn inlined_assembly[
 
 @always_inline("nodebug")
 fn inlined_assembly[
+    arg0_type: AnyTrivialRegType,
+    arg1_type: AnyTrivialRegType,
+    arg2_type: AnyTrivialRegType,
+    arg3_type: AnyTrivialRegType,
+    arg4_type: AnyTrivialRegType,
+    arg5_type: AnyTrivialRegType,
+    arg6_type: AnyTrivialRegType,
+    arg7_type: AnyTrivialRegType, //,
     asm: StringLiteral,
-    result_type: AnyRegType,
-    arg0_type: AnyRegType,
-    arg1_type: AnyRegType,
-    arg2_type: AnyRegType,
-    arg3_type: AnyRegType,
-    arg4_type: AnyRegType,
-    arg5_type: AnyRegType,
-    arg6_type: AnyRegType,
-    arg7_type: AnyRegType,
+    result_type: AnyTrivialRegType,
     /,
     *,
     constraints: StringLiteral = "r,r,r,r,r,r,r,r",
@@ -557,17 +557,17 @@ fn inlined_assembly[
 
 @always_inline("nodebug")
 fn inlined_assembly[
+    arg0_type: AnyTrivialRegType,
+    arg1_type: AnyTrivialRegType,
+    arg2_type: AnyTrivialRegType,
+    arg3_type: AnyTrivialRegType,
+    arg4_type: AnyTrivialRegType,
+    arg5_type: AnyTrivialRegType,
+    arg6_type: AnyTrivialRegType,
+    arg7_type: AnyTrivialRegType,
+    arg8_type: AnyTrivialRegType, //,
     asm: StringLiteral,
-    result_type: AnyRegType,
-    arg0_type: AnyRegType,
-    arg1_type: AnyRegType,
-    arg2_type: AnyRegType,
-    arg3_type: AnyRegType,
-    arg4_type: AnyRegType,
-    arg5_type: AnyRegType,
-    arg6_type: AnyRegType,
-    arg7_type: AnyRegType,
-    arg8_type: AnyRegType,
+    result_type: AnyTrivialRegType,
     /,
     *,
     constraints: StringLiteral = "r,r,r,r,r,r,r,r,r",
@@ -628,18 +628,18 @@ fn inlined_assembly[
 
 @always_inline("nodebug")
 fn inlined_assembly[
+    arg0_type: AnyTrivialRegType,
+    arg1_type: AnyTrivialRegType,
+    arg2_type: AnyTrivialRegType,
+    arg3_type: AnyTrivialRegType,
+    arg4_type: AnyTrivialRegType,
+    arg5_type: AnyTrivialRegType,
+    arg6_type: AnyTrivialRegType,
+    arg7_type: AnyTrivialRegType,
+    arg8_type: AnyTrivialRegType,
+    arg9_type: AnyTrivialRegType, //,
     asm: StringLiteral,
-    result_type: AnyRegType,
-    arg0_type: AnyRegType,
-    arg1_type: AnyRegType,
-    arg2_type: AnyRegType,
-    arg3_type: AnyRegType,
-    arg4_type: AnyRegType,
-    arg5_type: AnyRegType,
-    arg6_type: AnyRegType,
-    arg7_type: AnyRegType,
-    arg8_type: AnyRegType,
-    arg9_type: AnyRegType,
+    result_type: AnyTrivialRegType,
     /,
     *,
     constraints: StringLiteral = "r,r,r,r,r,r,r,r,r,r",

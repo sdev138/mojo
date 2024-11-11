@@ -17,27 +17,29 @@ Your value can take on a value or `None`, and you need to check
 and explicitly extract the value to get it out.
 
 ```mojo
-from collections.optional import Optional
+from collections import Optional
 var a = Optional(1)
 var b = Optional[Int](None)
 if a:
     print(a.value())  # prints 1
-if b:  # b is False, so no print
+if b:  # bool(b) is False, so no print
     print(b.value())
 var c = a.or_else(2)
 var d = b.or_else(2)
-print(c.value())  # prints 1
-print(d.value())  # prints 2
+print(c)  # prints 1
+print(d)  # prints 2
 ```
 """
 
-from utils.variant import Variant
+from os import abort
+from utils import Variant
 
 
 # TODO(27780): NoneType can't currently conform to traits
 @value
-struct _NoneType(CollectionElement):
-    pass
+struct _NoneType(CollectionElement, CollectionElementNew):
+    fn __init__(inout self, *, other: Self):
+        pass
 
 
 # ===----------------------------------------------------------------------===#
@@ -45,8 +47,9 @@ struct _NoneType(CollectionElement):
 # ===----------------------------------------------------------------------===#
 
 
-@value
-struct Optional[T: CollectionElement](CollectionElement, Boolable):
+struct Optional[T: CollectionElement](
+    CollectionElement, CollectionElementNew, Boolable
+):
     """A type modeling a value which may or may not be present.
 
     Optional values can be thought of as a type-safe nullable pattern.
@@ -57,27 +60,32 @@ struct Optional[T: CollectionElement](CollectionElement, Boolable):
     copy/move for Optional and allow it to be used in collections itself.
 
     ```mojo
-    from collections.optional import Optional
+    from collections import Optional
     var a = Optional(1)
     var b = Optional[Int](None)
     if a:
         print(a.value())  # prints 1
-    if b:  # b is False, so no print
+    if b:  # bool(b) is False, so no print
         print(b.value())
     var c = a.or_else(2)
     var d = b.or_else(2)
-    print(c.value())  # prints 1
-    print(d.value())  # prints 2
+    print(c)  # prints 1
+    print(d)  # prints 2
     ```
 
     Parameters:
         T: The type of value stored in the Optional.
     """
 
+    # Fields
     # _NoneType comes first so its index is 0.
     # This means that Optionals that are 0-initialized will be None.
     alias _type = Variant[_NoneType, T]
     var _value: Self._type
+
+    # ===-------------------------------------------------------------------===#
+    # Life cycle methods
+    # ===-------------------------------------------------------------------===#
 
     fn __init__(inout self):
         """Construct an empty Optional."""
@@ -89,7 +97,18 @@ struct Optional[T: CollectionElement](CollectionElement, Boolable):
         Args:
             value: The value to store in the optional.
         """
-        self._value = Self._type(value ^)
+        self._value = Self._type(value^)
+
+    # TODO(MSTDL-715):
+    #   This initializer should not be necessary, we should need
+    #   only the initilaizer from a `NoneType`.
+    fn __init__(inout self, value: NoneType._mlir_type):
+        """Construct an empty Optional.
+
+        Args:
+            value: Must be exactly `None`.
+        """
+        self = Self(value=NoneType(value))
 
     fn __init__(inout self, value: NoneType):
         """Construct an empty Optional.
@@ -99,52 +118,125 @@ struct Optional[T: CollectionElement](CollectionElement, Boolable):
         """
         self = Self()
 
-    fn value(self) -> T:
-        """Unsafely retrieve the value out of the Optional.
-
-        This function currently creates a copy. Once we have lifetimes
-        we'll be able to have it return a reference.
-
-        This doesn't check to see if the optional contains a value.
-        If you call this without first verifying the optional with __bool__()
-        eg. by `if my_option:` or without otherwise knowing that it contains a
-        value (for instance with `or_else`), you'll get garbage unsafe data out.
-
-        Returns:
-            The contained data of the option as a T value.
-        """
-        debug_assert(self.__bool__(), ".value() on empty Optional")
-        return self._value.get[T]()[]
-
-    fn take(owned self) -> T:
-        """Unsafely move the value out of the Optional.
-
-        The caller takes ownership over the new value, and the Optional is
-        destroyed.
-
-        This doesn't check to see if the optional contains a value.
-        If you call this without first verifying the optional with __bool__()
-        eg. by `if my_option:` or without otherwise knowing that it contains a
-        value (for instance with `or_else`), you'll get garbage unsafe data out.
-
-        Returns:
-            The contained data of the option as an owned T value.
-        """
-        debug_assert(self.__bool__(), ".take() on empty Optional")
-        return self._value.take[T]()
-
-    fn or_else(self, default: T) -> T:
-        """Return the underlying value contained in the Optional or a default value if the Optional's underlying value is not present.
+    fn __init__(inout self, *, other: Self):
+        """Copy construct an Optional.
 
         Args:
-            default: The new value to use if no value was present.
+            other: The Optional to copy.
+        """
+        self.__copyinit__(other)
+
+    fn __copyinit__(inout self, other: Self):
+        """Copy construct an Optional.
+
+        Args:
+            other: The Optional to copy.
+        """
+        self._value = other._value
+
+    fn __moveinit__(inout self, owned other: Self):
+        """Move this `Optional`.
+
+        Args:
+            other: The `Optional` to move from.
+        """
+        self._value = other._value^
+
+    # ===-------------------------------------------------------------------===#
+    # Operator dunders
+    # ===-------------------------------------------------------------------===#
+
+    fn __is__(self, other: NoneType) -> Bool:
+        """Return `True` if the Optional has no value.
+
+        It allows you to use the following syntax: `if my_optional is None:`
+
+        Args:
+            other: The value to compare to (None).
 
         Returns:
-            The underlying value contained in the Optional or a default value.
+            True if the Optional has no value and False otherwise.
         """
-        if self.__bool__():
-            return self._value.get[T]()[]
-        return default
+        return not self.__bool__()
+
+    fn __isnot__(self, other: NoneType) -> Bool:
+        """Return `True` if the Optional has a value.
+
+        It allows you to use the following syntax: `if my_optional is not None:`.
+
+        Args:
+            other: The value to compare to (None).
+
+        Returns:
+            True if the Optional has a value and False otherwise.
+        """
+        return self.__bool__()
+
+    fn __eq__(self, rhs: NoneType) -> Bool:
+        """Return `True` if a value is not present.
+
+        Args:
+            rhs: The `None` value to compare to.
+
+        Returns:
+            `True` if a value is not present, `False` otherwise.
+        """
+        return self is None
+
+    fn __eq__[
+        T: EqualityComparableCollectionElement
+    ](self: Optional[T], rhs: Optional[T]) -> Bool:
+        """Return `True` if this is the same as another optional value, meaning
+        both are absent, or both are present and have the same underlying value.
+
+        Parameters:
+            T: The type of the elements in the list. Must implement the
+              traits `CollectionElement` and `EqualityComparable`.
+
+        Args:
+            rhs: The value to compare to.
+
+        Returns:
+            True if the values are the same.
+        """
+        if self:
+            if rhs:
+                return self.value() == rhs.value()
+            return False
+        return not rhs
+
+    fn __ne__(self, rhs: NoneType) -> Bool:
+        """Return `True` if a value is present.
+
+        Args:
+            rhs: The `None` value to compare to.
+
+        Returns:
+            `False` if a value is not present, `True` otherwise.
+        """
+        return self is not None
+
+    fn __ne__[
+        T: EqualityComparableCollectionElement
+    ](self: Optional[T], rhs: Optional[T]) -> Bool:
+        """Return `False` if this is the same as another optional value, meaning
+        both are absent, or both are present and have the same underlying value.
+
+        Parameters:
+            T: The type of the elements in the list. Must implement the
+              traits `CollectionElement` and `EqualityComparable`.
+
+        Args:
+            rhs: The value to compare to.
+
+        Returns:
+            False if the values are the same.
+        """
+        return not (self == rhs)
+
+    # ===-------------------------------------------------------------------===#
+    # Trait implementations
+    # ===-------------------------------------------------------------------===#
 
     fn __bool__(self) -> Bool:
         """Return true if the Optional has a value.
@@ -162,65 +254,144 @@ struct Optional[T: CollectionElement](CollectionElement, Boolable):
         """
         return not self
 
-    fn __and__[type: Boolable](self, other: type) -> Bool:
-        """Return true if self has a value and the other value is coercible to
-        True.
+    fn __str__[
+        U: RepresentableCollectionElement, //
+    ](self: Optional[U]) -> String:
+        """Return the string representation of the value of the Optional.
 
         Parameters:
-            type: Type coercible to Bool.
-
-        Args:
-            other: Value to compare to.
+            U: The type of the elements in the list. Must implement the
+              traits `Representable` and `CollectionElement`.
 
         Returns:
-            True if both inputs are True after boolean coercion.
+            A string representation of the Optional.
         """
-        return self.__bool__() and other.__bool__()
+        var output = String()
+        var writer = output._unsafe_to_formatter()
+        self.format_to(writer)
+        return output
 
-    fn __rand__[type: Boolable](self, other: type) -> Bool:
-        """Return true if self has a value and the other value is coercible to
-        True.
+    # TODO: Include the Parameter type in the string as well.
+    fn __repr__[
+        U: RepresentableCollectionElement, //
+    ](self: Optional[U]) -> String:
+        """Returns the verbose string representation of the Optional.
 
         Parameters:
-            type: Type coercible to Bool.
-
-        Args:
-            other: Value to compare to.
+            U: The type of the elements in the list. Must implement the
+              traits `Representable` and `CollectionElement`.
 
         Returns:
-            True if both inputs are True after boolean coercion.
+            A verbose string representation of the Optional.
         """
-        return self.__bool__() and other.__bool__()
+        var output = String()
+        var writer = output._unsafe_to_formatter()
+        writer.write("Optional(")
+        self.format_to(writer)
+        writer.write(")")
+        return output
 
-    fn __or__[type: Boolable](self, other: type) -> Bool:
-        """Return true if self has a value or the other value is coercible to
-        True.
+    fn format_to[
+        U: RepresentableCollectionElement, //
+    ](self: Optional[U], inout writer: Formatter):
+        """Write Optional string representation to a `Formatter`.
 
         Parameters:
-            type: Type coercible to Bool.
+            U: The type of the elements in the list. Must implement the
+              traits `Representable` and `CollectionElement`.
 
         Args:
-            other: Value to compare to.
+            writer: The formatter to write to.
+        """
+        if self:
+            writer.write(repr(self.value()))
+        else:
+            writer.write("None")
+
+    # ===-------------------------------------------------------------------===#
+    # Methods
+    # ===-------------------------------------------------------------------===#
+
+    @always_inline
+    fn value(ref [_]self: Self) -> ref [__lifetime_of(self)] T:
+        """Retrieve a reference to the value of the Optional.
+
+        This check to see if the optional contains a value.
+        If you call this without first verifying the optional with __bool__()
+        eg. by `if my_option:` or without otherwise knowing that it contains a
+        value (for instance with `or_else`), the program will abort
 
         Returns:
-            True if either inputs is True after boolean coercion.
+            A reference to the contained data of the option as a Reference[T].
         """
-        return self.__bool__() or other.__bool__()
+        if not self.__bool__():
+            abort(".value() on empty Optional")
 
-    fn __ror__[type: Boolable](self, other: type) -> Bool:
-        """Return true if self has a value or the other value is coercible to
-        True.
+        return self.unsafe_value()
 
-        Parameters:
-            type: Type coercible to Bool.
+    @always_inline
+    fn unsafe_value(ref [_]self: Self) -> ref [__lifetime_of(self)] T:
+        """Unsafely retrieve a reference to the value of the Optional.
+
+        This doesn't check to see if the optional contains a value.
+        If you call this without first verifying the optional with __bool__()
+        eg. by `if my_option:` or without otherwise knowing that it contains a
+        value (for instance with `or_else`), you'll get garbage unsafe data out.
+
+        Returns:
+            A reference to the contained data of the option as a Reference[T].
+        """
+        debug_assert(self.__bool__(), ".value() on empty Optional")
+        return self._value.unsafe_get[T]()[]
+
+    fn take(inout self) -> T:
+        """Move the value out of the Optional.
+
+        The caller takes ownership over the new value, which is moved
+        out of the Optional, and the Optional is left in an empty state.
+
+        This check to see if the optional contains a value.
+        If you call this without first verifying the optional with __bool__()
+        eg. by `if my_option:` or without otherwise knowing that it contains a
+        value (for instance with `or_else`), you'll get garbage unsafe data out.
+
+        Returns:
+            The contained data of the option as an owned T value.
+        """
+        if not self.__bool__():
+            abort(".take() on empty Optional")
+        return self.unsafe_take()
+
+    fn unsafe_take(inout self) -> T:
+        """Unsafely move the value out of the Optional.
+
+        The caller takes ownership over the new value, which is moved
+        out of the Optional, and the Optional is left in an empty state.
+
+        This check to see if the optional contains a value.
+        If you call this without first verifying the optional with __bool__()
+        eg. by `if my_option:` or without otherwise knowing that it contains a
+        value (for instance with `or_else`), the program will abort!
+
+        Returns:
+            The contained data of the option as an owned T value.
+        """
+        debug_assert(self.__bool__(), ".unsafe_take() on empty Optional")
+        return self._value.unsafe_replace[_NoneType, T](_NoneType())
+
+    fn or_else(self, default: T) -> T:
+        """Return the underlying value contained in the Optional or a default
+        value if the Optional's underlying value is not present.
 
         Args:
-            other: Value to compare to.
+            default: The new value to use if no value was present.
 
         Returns:
-            True if either inputs is True after boolean coercion.
+            The underlying value contained in the Optional or a default value.
         """
-        return self.__bool__() or other.__bool__()
+        if self.__bool__():
+            return self._value[T]
+        return default
 
 
 # ===----------------------------------------------------------------------===#
@@ -229,7 +400,7 @@ struct Optional[T: CollectionElement](CollectionElement, Boolable):
 
 
 @register_passable("trivial")
-struct OptionalReg[T: AnyRegType](Boolable):
+struct OptionalReg[T: AnyTrivialRegType](Boolable):
     """A register-passable optional type.
 
     This struct optionally contains a value. It only works with trivial register
@@ -239,127 +410,114 @@ struct OptionalReg[T: AnyRegType](Boolable):
         T: The type of value stored in the Optional.
     """
 
-    alias _type = __mlir_type[`!kgen.variant<`, T, `, i1>`]
-    var _value: Self._type
+    # Fields
+    alias _mlir_type = __mlir_type[`!kgen.variant<`, T, `, i1>`]
+    var _value: Self._mlir_type
 
-    fn __init__() -> Self:
-        """Create an optional without a value.
+    # ===-------------------------------------------------------------------===#
+    # Life cycle methods
+    # ===-------------------------------------------------------------------===#
 
-        Returns:
-            The optional.
-        """
-        return Self(None)
+    fn __init__(inout self):
+        """Create an optional with a value of None."""
+        self = Self(None)
 
-    fn __init__(value: T) -> Self:
+    fn __init__(inout self, value: T):
         """Create an optional with a value.
 
         Args:
             value: The value.
-
-        Returns:
-            The optional.
         """
-        return Self {
-            _value: __mlir_op.`kgen.variant.create`[
-                _type = Self._type, index = Int(0).value
-            ](value)
-        }
+        self._value = __mlir_op.`kgen.variant.create`[
+            _type = Self._mlir_type, index = Int(0).value
+        ](value)
 
-    fn __init__(value: NoneType) -> Self:
+    # TODO(MSTDL-715):
+    #   This initializer should not be necessary, we should need
+    #   only the initilaizer from a `NoneType`.
+    fn __init__(inout self, value: NoneType._mlir_type):
+        """Construct an empty Optional.
+
+        Args:
+            value: Must be exactly `None`.
+        """
+        self = Self(value=NoneType(value))
+
+    fn __init__(inout self, value: NoneType):
         """Create an optional without a value from a None literal.
 
         Args:
             value: The None value.
+        """
+        self._value = __mlir_op.`kgen.variant.create`[
+            _type = Self._mlir_type, index = Int(1).value
+        ](__mlir_attr.false)
+
+    # ===-------------------------------------------------------------------===#
+    # Operator dunders
+    # ===-------------------------------------------------------------------===#
+
+    fn __is__(self, other: NoneType) -> Bool:
+        """Return `True` if the Optional has no value.
+
+        It allows you to use the following syntax: `if my_optional is None:`
+
+        Args:
+            other: The value to compare to (None).
 
         Returns:
-            The optional without a value.
+            True if the Optional has no value and False otherwise.
         """
-        return Self {
-            _value: __mlir_op.`kgen.variant.create`[
-                _type = Self._type, index = Int(1).value
-            ](__mlir_attr.`false`)
-        }
+        return not self.__bool__()
 
+    fn __isnot__(self, other: NoneType) -> Bool:
+        """Return `True` if the Optional has a value.
+
+        It allows you to use the following syntax: `if my_optional is not None:`
+
+        Args:
+            other: The value to compare to (None).
+
+        Returns:
+            True if the Optional has a value and False otherwise.
+        """
+        return self.__bool__()
+
+    # ===-------------------------------------------------------------------===#
+    # Trait implementations
+    # ===-------------------------------------------------------------------===#
+
+    fn __bool__(self) -> Bool:
+        """Return true if the optional has a value.
+
+        Returns:
+            True if the optional has a value and False otherwise.
+        """
+        return __mlir_op.`kgen.variant.is`[index = Int(0).value](self._value)
+
+    # ===-------------------------------------------------------------------===#
+    # Methods
+    # ===-------------------------------------------------------------------===#
+
+    @always_inline
     fn value(self) -> T:
         """Get the optional value.
 
         Returns:
             The contained value.
         """
-        return __mlir_op.`kgen.variant.take`[index = Int(0).value](self._value)
+        return __mlir_op.`kgen.variant.get`[index = Int(0).value](self._value)
 
-    fn __bool__(self) -> Bool:
-        """Return true if the optional has a value.
-
-        Returns:
-            True if the optional has a valu and False otherwise.
-        """
-        return __mlir_op.`kgen.variant.is`[index = Int(0).value](self._value)
-
-    fn __invert__(self) -> Bool:
-        """Return False if the optional has a value.
-
-        Returns:
-            False if the optional has a value and True otherwise.
-        """
-        return not self.__bool__()
-
-    fn __and__[type: Boolable](self, other: type) -> Bool:
-        """Return true if self has a value and the other value is coercible to
-        True.
-
-        Parameters:
-            type: Type coercible to Bool.
+    fn or_else(self, default: T) -> T:
+        """Return the underlying value contained in the Optional or a default
+        value if the Optional's underlying value is not present.
 
         Args:
-            other: Value to compare to.
+            default: The new value to use if no value was present.
 
         Returns:
-            True if both inputs are True after boolean coercion.
+            The underlying value contained in the Optional or a default value.
         """
-        return self.__bool__() and other.__bool__()
-
-    fn __rand__[type: Boolable](self, other: type) -> Bool:
-        """Return true if self has a value and the other value is coercible to
-        True.
-
-        Parameters:
-            type: Type coercible to Bool.
-
-        Args:
-            other: Value to compare to.
-
-        Returns:
-            True if both inputs are True after boolean coercion.
-        """
-        return self.__bool__() and other.__bool__()
-
-    fn __or__[type: Boolable](self, other: type) -> Bool:
-        """Return true if self has a value or the other value is coercible to
-        True.
-
-        Parameters:
-            type: Type coercible to Bool.
-
-        Args:
-            other: Value to compare to.
-
-        Returns:
-            True if either inputs is True after boolean coercion.
-        """
-        return self.__bool__() or other.__bool__()
-
-    fn __ror__[type: Boolable](self, other: type) -> Bool:
-        """Return true if self has a value or the other value is coercible to
-        True.
-
-        Parameters:
-            type: Type coercible to Bool.
-
-        Args:
-            other: Value to compare to.
-
-        Returns:
-            True if either inputs is True after boolean coercion.
-        """
-        return self.__bool__() or other.__bool__()
+        if self:
+            return self.value()
+        return default

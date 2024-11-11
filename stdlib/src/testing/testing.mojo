@@ -19,28 +19,9 @@ from testing import assert_true
 ```
 """
 from collections import Optional
+from math import isclose
 
-# ===----------------------------------------------------------------------=== #
-# Utilities
-# ===----------------------------------------------------------------------=== #
-
-
-@always_inline
-fn _abs(x: SIMD) -> __type_of(x):
-    return (x > 0).select(x, -x)
-
-
-@always_inline
-fn _isclose(
-    a: SIMD, b: __type_of(a), *, atol: Scalar[a.type], rtol: Scalar[a.type]
-) -> SIMD[DType.bool, a.size]:
-    @parameter
-    if a.type.is_bool() or a.type.is_integral():
-        return a == b
-
-    var atol_vec = SIMD[a.type, a.size](atol)
-    var rtol_vec = SIMD[a.type, a.size](rtol)
-    return _abs(a - b) <= (atol_vec.max(rtol_vec * _abs(a).max(_abs(b))))
+from builtin._location import __call_location, _SourceLocation
 
 
 # ===----------------------------------------------------------------------=== #
@@ -49,51 +30,109 @@ fn _isclose(
 
 
 @always_inline
+fn _assert_error[T: Stringable](msg: T, loc: _SourceLocation) -> String:
+    return loc.prefix("AssertionError: " + str(msg))
+
+
+@always_inline
 fn assert_true[
-    T: Boolable
-](val: T, msg: String = "condition was unexpectedly False") raises:
-    """Asserts that the input value is True. If it is not then an
-    Error is raised.
+    T: Boolable, //
+](
+    val: T,
+    msg: String = "condition was unexpectedly False",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
+    """Asserts that the input value is True and raises an Error if it's not.
 
     Parameters:
-        T: A Boolable type.
+        T: The type of the value argument.
 
     Args:
         val: The value to assert to be True.
         msg: The message to be printed if the assertion fails.
+        location: The location of the error (default to the `__call_location`).
 
     Raises:
         An Error with the provided message if assert fails and `None` otherwise.
     """
     if not val:
-        raise Error("AssertionError: " + msg)
+        raise _assert_error(msg, location.or_else(__call_location()))
 
 
 @always_inline
 fn assert_false[
-    T: Boolable
-](val: T, msg: String = "condition was unexpectedly True") raises:
-    """Asserts that the input value is False. If it is not then an Error is
-    raised.
+    T: Boolable, //
+](
+    val: T,
+    msg: String = "condition was unexpectedly True",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
+    """Asserts that the input value is False and raises an Error if it's not.
 
     Parameters:
-        T: A Boolable type.
+        T: The type of the value argument.
 
     Args:
         val: The value to assert to be False.
         msg: The message to be printed if the assertion fails.
+        location: The location of the error (default to the `__call_location`).
 
     Raises:
         An Error with the provided message if assert fails and `None` otherwise.
     """
     if val:
-        raise Error("AssertionError: " + msg)
+        raise _assert_error(msg, location.or_else(__call_location()))
 
 
-# TODO: Collapse these two overloads for generic T that has the
-# Equality Comparable trait.
+trait Testable(EqualityComparable, Stringable):
+    """A trait that a struct should conform to if we do equality testing on it.
+    """
+
+    pass
+
+
 @always_inline
-fn assert_equal(lhs: Int, rhs: Int, msg: String = "") raises:
+fn assert_equal[
+    T: Testable
+](
+    lhs: T,
+    rhs: T,
+    msg: String = "",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
+    """Asserts that the input values are equal. If it is not then an Error
+    is raised.
+
+    Parameters:
+        T: A Testable type.
+
+    Args:
+        lhs: The lhs of the equality.
+        rhs: The rhs of the equality.
+        msg: The message to be printed if the assertion fails.
+        location: The location of the error (default to the `__call_location`).
+
+    Raises:
+        An Error with the provided message if assert fails and `None` otherwise.
+    """
+    if lhs != rhs:
+        raise _assert_cmp_error["`left == right` comparison"](
+            str(lhs), str(rhs), msg=msg, loc=location.or_else(__call_location())
+        )
+
+
+# TODO: Remove the String and SIMD overloads once we have more powerful traits.
+@always_inline
+fn assert_equal(
+    lhs: String,
+    rhs: String,
+    msg: String = "",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
     """Asserts that the input values are equal. If it is not then an Error
     is raised.
 
@@ -101,35 +140,27 @@ fn assert_equal(lhs: Int, rhs: Int, msg: String = "") raises:
         lhs: The lhs of the equality.
         rhs: The rhs of the equality.
         msg: The message to be printed if the assertion fails.
+        location: The location of the error (default to the `__call_location`).
 
     Raises:
         An Error with the provided message if assert fails and `None` otherwise.
     """
     if lhs != rhs:
-        raise _assert_equal_error(str(lhs), str(rhs), msg=msg)
-
-
-@always_inline
-fn assert_equal(lhs: String, rhs: String, msg: String = "") raises:
-    """Asserts that the input values are equal. If it is not then an Error
-    is raised.
-
-    Args:
-        lhs: The lhs of the equality.
-        rhs: The rhs of the equality.
-        msg: The message to be printed if the assertion fails.
-
-    Raises:
-        An Error with the provided message if assert fails and `None` otherwise.
-    """
-    if lhs != rhs:
-        raise _assert_equal_error(lhs, rhs, msg=msg)
+        raise _assert_cmp_error["`left == right` comparison"](
+            lhs, rhs, msg=msg, loc=location.or_else(__call_location())
+        )
 
 
 @always_inline
 fn assert_equal[
     type: DType, size: Int
-](lhs: SIMD[type, size], rhs: SIMD[type, size], msg: String = "") raises:
+](
+    lhs: SIMD[type, size],
+    rhs: SIMD[type, size],
+    msg: String = "",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
     """Asserts that the input values are equal. If it is not then an
     Error is raised.
 
@@ -141,33 +172,56 @@ fn assert_equal[
         lhs: The lhs of the equality.
         rhs: The rhs of the equality.
         msg: The message to be printed if the assertion fails.
+        location: The location of the error (default to the `__call_location`).
 
     Raises:
         An Error with the provided message if assert fails and `None` otherwise.
     """
-    if lhs != rhs:
-        raise _assert_equal_error(str(lhs), str(rhs), msg=msg)
+    if any(lhs != rhs):
+        raise _assert_cmp_error["`left == right` comparison"](
+            str(lhs), str(rhs), msg=msg, loc=location.or_else(__call_location())
+        )
 
 
 @always_inline
-fn assert_not_equal(lhs: Int, rhs: Int, msg: String = "") raises:
+fn assert_not_equal[
+    T: Testable
+](
+    lhs: T,
+    rhs: T,
+    msg: String = "",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
     """Asserts that the input values are not equal. If it is not then an
     Error is raised.
+
+    Parameters:
+        T: A Testable type.
 
     Args:
         lhs: The lhs of the inequality.
         rhs: The rhs of the inequality.
         msg: The message to be printed if the assertion fails.
+        location: The location of the error (default to the `__call_location`).
 
     Raises:
         An Error with the provided message if assert fails and `None` otherwise.
     """
     if lhs == rhs:
-        raise _assert_not_equal_error(str(lhs), str(rhs), msg=msg)
+        raise _assert_cmp_error["`left != right` comparison"](
+            str(lhs), str(rhs), msg=msg, loc=location.or_else(__call_location())
+        )
 
 
 @always_inline
-fn assert_not_equal(lhs: String, rhs: String, msg: String = "") raises:
+fn assert_not_equal(
+    lhs: String,
+    rhs: String,
+    msg: String = "",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
     """Asserts that the input values are not equal. If it is not then an
     an Error is raised.
 
@@ -175,18 +229,27 @@ fn assert_not_equal(lhs: String, rhs: String, msg: String = "") raises:
         lhs: The lhs of the inequality.
         rhs: The rhs of the inequality.
         msg: The message to be printed if the assertion fails.
+        location: The location of the error (default to the `__call_location`).
 
     Raises:
         An Error with the provided message if assert fails and `None` otherwise.
     """
     if lhs == rhs:
-        raise _assert_not_equal_error(str(lhs), str(rhs), msg=msg)
+        raise _assert_cmp_error["`left != right` comparison"](
+            lhs, rhs, msg=msg, loc=location.or_else(__call_location())
+        )
 
 
 @always_inline
 fn assert_not_equal[
     type: DType, size: Int
-](lhs: SIMD[type, size], rhs: SIMD[type, size], msg: String = "") raises:
+](
+    lhs: SIMD[type, size],
+    rhs: SIMD[type, size],
+    msg: String = "",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
     """Asserts that the input values are not equal. If it is not then an
     Error is raised.
 
@@ -198,12 +261,15 @@ fn assert_not_equal[
         lhs: The lhs of the inequality.
         rhs: The rhs of the inequality.
         msg: The message to be printed if the assertion fails.
+        location: The location of the error (default to the `__call_location`).
 
     Raises:
         An Error with the provided message if assert fails and `None` otherwise.
     """
-    if lhs == rhs:
-        raise _assert_not_equal_error(str(lhs), str(rhs), msg=msg)
+    if all(lhs == rhs):
+        raise _assert_cmp_error["`left != right` comparison"](
+            str(lhs), str(rhs), msg=msg, loc=location.or_else(__call_location())
+        )
 
 
 @always_inline
@@ -212,14 +278,23 @@ fn assert_almost_equal[
 ](
     lhs: SIMD[type, size],
     rhs: SIMD[type, size],
-    /,
-    *,
     msg: String = "",
+    *,
     atol: Scalar[type] = 1e-08,
     rtol: Scalar[type] = 1e-05,
+    equal_nan: Bool = False,
+    location: Optional[_SourceLocation] = None,
 ) raises:
     """Asserts that the input values are equal up to a tolerance. If it is
     not then an Error is raised.
+
+    When the type is boolean or integral, then equality is checked. When the
+    type is floating-point, then this checks if the two input values are
+    numerically the close using the $abs(lhs - rhs) <= max(rtol * max(abs(lhs),
+    abs(rhs)), atol)$ formula.
+
+    Constraints:
+        The type must be boolean, integral, or floating-point.
 
     Parameters:
         type: The dtype of the left- and right-hand-side SIMD vectors.
@@ -229,38 +304,105 @@ fn assert_almost_equal[
         lhs: The lhs of the equality.
         rhs: The rhs of the equality.
         msg: The message to print.
-        atol: The _absolute tolerance.
+        atol: The absolute tolerance.
         rtol: The relative tolerance.
+        equal_nan: Whether to treat nans as equal.
+        location: The location of the error (default to the `__call_location`).
 
     Raises:
         An Error with the provided message if assert fails and `None` otherwise.
     """
-    var almost_equal = _isclose(lhs, rhs, atol=atol, rtol=rtol)
-    if not almost_equal:
-        var err = "AssertionError: " + str(lhs) + " is not close to " + str(
-            rhs
-        ) + " with a diff of " + _abs(lhs - rhs)
+    constrained[
+        type is DType.bool or type.is_integral() or type.is_floating_point(),
+        "type must be boolean, integral, or floating-point",
+    ]()
+
+    var almost_equal = isclose(
+        lhs, rhs, atol=atol, rtol=rtol, equal_nan=equal_nan
+    )
+
+    if not all(almost_equal):
+        var err = str(lhs) + " is not close to " + str(rhs)
+
+        @parameter
+        if type.is_integral() or type.is_floating_point():
+            err += " with a diff of " + str(abs(lhs - rhs))
+
         if msg:
             err += " (" + msg + ")"
-        raise err
+
+        raise _assert_error(err, location.or_else(__call_location()))
 
 
-fn _assert_equal_error(
-    lhs: String, rhs: String, msg: String = ""
-) raises -> Error:
-    var err = "AssertionError: `left == right` comparison failed:\n   left: " + lhs + "\n  right: " + rhs
+@always_inline
+fn assert_is[
+    T: StringableIdentifiable
+](
+    lhs: T,
+    rhs: T,
+    msg: String = "",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
+    """Asserts that the input values have the same identity. If they do not
+    then an Error is raised.
+
+    Parameters:
+        T: A StringableIdentifiable type.
+
+    Args:
+        lhs: The lhs of the `is` statement.
+        rhs: The rhs of the `is` statement.
+        msg: The message to be printed if the assertion fails.
+        location: The location of the error (default to the `__call_location`).
+
+    Raises:
+        An Error with the provided message if assert fails and `None` otherwise.
+    """
+    if lhs is not rhs:
+        raise _assert_cmp_error["`left is right` identification"](
+            str(lhs), str(rhs), msg=msg, loc=location.or_else(__call_location())
+        )
+
+
+@always_inline
+fn assert_is_not[
+    T: StringableIdentifiable
+](
+    lhs: T,
+    rhs: T,
+    msg: String = "",
+    *,
+    location: Optional[_SourceLocation] = None,
+) raises:
+    """Asserts that the input values have different identities. If they do not
+    then an Error is raised.
+
+    Parameters:
+        T: A StringableIdentifiable type.
+
+    Args:
+        lhs: The lhs of the `is not` statement.
+        rhs: The rhs of the `is not` statement.
+        msg: The message to be printed if the assertion fails.
+        location: The location of the error (default to the `__call_location`).
+
+    Raises:
+        An Error with the provided message if assert fails and `None` otherwise.
+    """
+    if lhs is rhs:
+        raise _assert_cmp_error["`left is not right` identification"](
+            str(lhs), str(rhs), msg=msg, loc=location.or_else(__call_location())
+        )
+
+
+fn _assert_cmp_error[
+    cmp: String
+](lhs: String, rhs: String, *, msg: String, loc: _SourceLocation) -> String:
+    var err = (cmp + " failed:\n   left: " + lhs + "\n  right: " + rhs)
     if msg:
         err += "\n  reason: " + msg
-    raise err
-
-
-fn _assert_not_equal_error(
-    lhs: String, rhs: String, msg: String = ""
-) raises -> Error:
-    var err = "AssertionError: `left != right` comparison failed:\n   left: " + lhs + "\n  right: " + rhs
-    if msg:
-        err += "\n  reason: " + msg
-    raise err
+    return _assert_error(err, loc)
 
 
 struct assert_raises:
@@ -293,18 +435,35 @@ struct assert_raises:
     var message_contains: Optional[String]
     """If present, check that the error message contains this literal string."""
 
-    fn __init__(inout self):
-        """Construct a context manager with no message pattern."""
-        self.message_contains = None
+    var call_location: _SourceLocation
+    """Assigned the value returned by __call_locations() at Self.__init__."""
 
-    fn __init__(inout self, *, contains: String):
+    @always_inline
+    fn __init__(inout self, *, location: Optional[_SourceLocation] = None):
+        """Construct a context manager with no message pattern.
+
+        Args:
+            location: The location of the error (default to the `__call_location`).
+        """
+        self.message_contains = None
+        self.call_location = location.or_else(__call_location())
+
+    @always_inline
+    fn __init__(
+        inout self,
+        *,
+        contains: String,
+        location: Optional[_SourceLocation] = None,
+    ):
         """Construct a context manager matching specific errors.
 
         Args:
             contains: The test will only pass if the error message
                 includes the literal text passed.
+            location: The location of the error (default to the `__call_location`).
         """
         self.message_contains = contains
+        self.call_location = location.or_else(__call_location())
 
     fn __enter__(self):
         """Enter the context manager."""
@@ -316,13 +475,21 @@ struct assert_raises:
         Raises:
             AssertionError: Always. The block must raise to pass the test.
         """
-        raise Error("AssertionError: Didn't raise")
+        raise Error(
+            "AssertionError: Didn't raise at " + str(self.call_location)
+        )
 
     fn __exit__(self, error: Error) raises -> Bool:
         """Exit the context manager with an error.
 
+        Args:
+            error: The error raised.
+
         Raises:
-            Error: If the error raised doesn't match the expected error to raise.
+            Error: If the error raised doesn't include the expected string.
+
+        Returns:
+            True if the error message contained the expected string.
         """
         if self.message_contains:
             return self.message_contains.value() in str(error)

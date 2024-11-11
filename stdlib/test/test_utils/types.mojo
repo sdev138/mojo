@@ -1,7 +1,14 @@
 # ===----------------------------------------------------------------------=== #
+# Copyright (c) 2024, Modular Inc. All rights reserved.
 #
-# This file is Modular Inc proprietary.
+# Licensed under the Apache License v2.0 with LLVM Exceptions:
+# https://llvm.org/LICENSE.txt
 #
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
 
@@ -15,13 +22,13 @@ struct MoveOnly[T: Movable](Movable):
     var data: T
     """Test data payload."""
 
-    fn __init__(inout self, i: T):
+    fn __init__(inout self, owned i: T):
         """Construct a MoveOnly providing the payload data.
 
         Args:
             i: The test data payload.
         """
-        self.data = i ^
+        self.data = i^
 
     fn __moveinit__(inout self, owned other: Self):
         """Move construct a MoveOnly from an existing variable.
@@ -29,16 +36,32 @@ struct MoveOnly[T: Movable](Movable):
         Args:
             other: The other instance that we copying the payload from.
         """
-        self.data = other.data ^
+        self.data = other.data^
 
 
-struct CopyCounter(CollectionElement):
+struct ExplicitCopyOnly(ExplicitlyCopyable):
+    var value: Int
+    var copy_count: Int
+
+    fn __init__(inout self, value: Int):
+        self.value = value
+        self.copy_count = 0
+
+    fn __init__(inout self, *, other: Self):
+        self.value = other.value
+        self.copy_count = other.copy_count + 1
+
+
+struct CopyCounter(CollectionElement, ExplicitlyCopyable):
     """Counts the number of copies performed on a value."""
 
     var copy_count: Int
 
     fn __init__(inout self):
         self.copy_count = 0
+
+    fn __init__(inout self, *, other: Self):
+        self.copy_count = other.copy_count + 1
 
     fn __moveinit__(inout self, owned existing: Self):
         self.copy_count = existing.copy_count
@@ -47,7 +70,10 @@ struct CopyCounter(CollectionElement):
         self.copy_count = existing.copy_count + 1
 
 
-struct MoveCounter[T: CollectionElement](CollectionElement):
+struct MoveCounter[T: CollectionElementNew](
+    CollectionElement,
+    CollectionElementNew,
+):
     """Counts the number of moves performed on a value."""
 
     var value: T
@@ -56,16 +82,40 @@ struct MoveCounter[T: CollectionElement](CollectionElement):
     fn __init__(inout self, owned value: T):
         """Construct a new instance of this type. This initial move is not counted.
         """
-        self.value = value ^
+        self.value = value^
         self.move_count = 0
 
+    # TODO: This type should not be ExplicitlyCopyable, but has to be to satisfy
+    #       CollectionElementNew at the moment.
+    fn __init__(inout self, *, other: Self):
+        """Explicitly copy the provided value.
+
+        Args:
+            other: The value to copy.
+        """
+        self.value = T(other=other.value)
+        self.move_count = other.move_count
+
     fn __moveinit__(inout self, owned existing: Self):
-        self.value = existing.value ^
+        self.value = existing.value^
         self.move_count = existing.move_count + 1
 
     # TODO: This type should not be Copyable, but has to be to satisfy
     #       CollectionElement at the moment.
     fn __copyinit__(inout self, existing: Self):
         # print("ERROR: _MoveCounter copy constructor called unexpectedly!")
-        self.value = existing.value
+        self.value = T(other=existing.value)
         self.move_count = existing.move_count
+
+
+@value
+struct ValueDestructorRecorder(ExplicitlyCopyable):
+    var value: Int
+    var destructor_counter: UnsafePointer[List[Int]]
+
+    fn __init__(inout self, *, other: Self):
+        self.value = other.value
+        self.destructor_counter = other.destructor_counter
+
+    fn __del__(owned self):
+        self.destructor_counter[].append(self.value)

@@ -19,9 +19,10 @@ from collections.vector import InlinedFixedVector
 ```
 """
 
-from memory.unsafe import Pointer, Reference
+from memory import Reference, UnsafePointer
+from sys import sizeof
 
-from utils.static_tuple import StaticTuple
+from utils import StaticTuple
 
 # ===----------------------------------------------------------------------===#
 # _VecIter
@@ -30,15 +31,15 @@ from utils.static_tuple import StaticTuple
 
 @value
 struct _VecIter[
-    type: AnyRegType,
-    vec_type: AnyRegType,
-    deref: fn (Pointer[vec_type], Int) -> type,
+    type: AnyTrivialRegType,
+    vec_type: AnyType,
+    deref: fn (UnsafePointer[vec_type], Int) -> type,
 ](Sized):
     """Iterator for any random-access container"""
 
     var i: Int
     var size: Int
-    var vec: Pointer[vec_type]
+    var vec: UnsafePointer[vec_type]
 
     fn __next__(inout self) -> type:
         self.i += 1
@@ -54,7 +55,7 @@ struct _VecIter[
 
 
 @always_inline
-fn _calculate_fixed_vector_default_size[type: AnyRegType]() -> Int:
+fn _calculate_fixed_vector_default_size[type: AnyTrivialRegType]() -> Int:
     alias prefered_bytecount = 64
     alias sizeof_type = sizeof[type]()
 
@@ -70,7 +71,8 @@ fn _calculate_fixed_vector_default_size[type: AnyRegType]() -> Int:
 
 
 struct InlinedFixedVector[
-    type: AnyRegType, size: Int = _calculate_fixed_vector_default_size[type]()
+    type: AnyTrivialRegType,
+    size: Int = _calculate_fixed_vector_default_size[type](),
 ](Sized):
     """A dynamically-allocated vector with small-vector optimization and a fixed
     maximum capacity.
@@ -100,7 +102,7 @@ struct InlinedFixedVector[
     alias static_data_type = StaticTuple[type, size]
     var static_data: Self.static_data_type
     """The underlying static storage, used for small vectors."""
-    var dynamic_data: Pointer[type]
+    var dynamic_data: UnsafePointer[type]
     """The underlying dynamic storage, used to grow large vectors."""
     var current_size: Int
     """The number of elements in the vector."""
@@ -117,9 +119,9 @@ struct InlinedFixedVector[
             capacity: The requested maximum capacity of the vector.
         """
         self.static_data = Self.static_data_type()  # Undef initialization
-        self.dynamic_data = Pointer[type]()
+        self.dynamic_data = UnsafePointer[type]()
         if capacity > Self.static_size:
-            self.dynamic_data = Pointer[type].alloc(capacity - size)
+            self.dynamic_data = UnsafePointer[type].alloc(capacity - size)
         self.current_size = 0
         self.capacity = capacity
 
@@ -182,21 +184,22 @@ struct InlinedFixedVector[
         return self.current_size
 
     @always_inline
-    fn __getitem__(self, i: Int) -> type:
+    fn __getitem__(self, idx: Int) -> type:
         """Gets a vector element at the given index.
 
         Args:
-            i: The index of the element.
+            idx: The index of the element.
 
         Returns:
             The element at the given index.
         """
+        var normalized_idx = idx
         debug_assert(
-            -self.current_size <= i < self.current_size,
+            -self.current_size <= normalized_idx < self.current_size,
             "index must be within bounds",
         )
-        var normalized_idx = i
-        if i < 0:
+
+        if normalized_idx < 0:
             normalized_idx += len(self)
 
         if normalized_idx < Self.static_size:
@@ -205,20 +208,19 @@ struct InlinedFixedVector[
         return self.dynamic_data[normalized_idx - Self.static_size]
 
     @always_inline
-    fn __setitem__(inout self, i: Int, value: type):
+    fn __setitem__(inout self, idx: Int, value: type):
         """Sets a vector element at the given index.
 
         Args:
-            i: The index of the element.
+            idx: The index of the element.
             value: The value to assign.
         """
+        var normalized_idx = idx
         debug_assert(
-            -self.current_size <= i < self.current_size,
+            -self.current_size <= normalized_idx < self.current_size,
             "index must be within bounds",
         )
-
-        var normalized_idx = i
-        if i < 0:
+        if normalized_idx < 0:
             normalized_idx += len(self)
 
         if normalized_idx < Self.static_size:
@@ -231,7 +233,7 @@ struct InlinedFixedVector[
         self.current_size = 0
 
     @staticmethod
-    fn _deref_iter_impl(selfptr: Pointer[Self], i: Int) -> type:
+    fn _deref_iter_impl(selfptr: UnsafePointer[Self], i: Int, /) -> type:
         return selfptr[][i]
 
     alias _iterator = _VecIter[type, Self, Self._deref_iter_impl]
@@ -243,5 +245,5 @@ struct InlinedFixedVector[
             An iterator to the start of the vector.
         """
         return Self._iterator(
-            0, self.current_size, __get_lvalue_as_address(self)
+            0, self.current_size, UnsafePointer.address_of(self)
         )

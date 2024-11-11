@@ -15,16 +15,17 @@
 These are Mojo built-ins, so you don't need to import them.
 """
 
-from memory.unsafe import Reference, _LITRef
+from memory import Reference, UnsafePointer
+
+from sys.intrinsics import _type_is_eq
 
 # ===----------------------------------------------------------------------===#
 # ListLiteral
 # ===----------------------------------------------------------------------===#
 
 
-@register_passable
-struct ListLiteral[*Ts: AnyRegType](Sized):
-    """The type of a literal heterogenous list expression.
+struct ListLiteral[*Ts: Movable](Sized, Movable):
+    """The type of a literal heterogeneous list expression.
 
     A list consists of zero or more values, separated by commas.
 
@@ -32,20 +33,34 @@ struct ListLiteral[*Ts: AnyRegType](Sized):
         Ts: The type of the elements.
     """
 
-    var storage: __mlir_type[`!kgen.pack<`, Ts, `>`]
+    var storage: Tuple[Ts]
     """The underlying storage for the list."""
 
+    # ===-------------------------------------------------------------------===#
+    # Life cycle methods
+    # ===-------------------------------------------------------------------===#
+
     @always_inline("nodebug")
-    fn __init__(*args: *Ts) -> Self:
+    fn __init__(inout self, owned *args: *Ts):
         """Construct the list literal from the given values.
 
         Args:
             args: The init values.
-
-        Returns:
-            The constructed ListLiteral.
         """
-        return Self {storage: args}
+        self.storage = Tuple(storage=args^)
+
+    fn __moveinit__(inout self, owned existing: Self):
+        """Move construct the list.
+
+        Args:
+            existing: The value to move from.
+        """
+
+        self.storage = existing.storage^
+
+    # ===-------------------------------------------------------------------===#
+    # Trait implementations
+    # ===-------------------------------------------------------------------===#
 
     @always_inline("nodebug")
     fn __len__(self) -> Int:
@@ -54,10 +69,14 @@ struct ListLiteral[*Ts: AnyRegType](Sized):
         Returns:
             The length of this ListLiteral.
         """
-        return __mlir_op.`pop.variadic.size`(Ts)
+        return len(self.storage)
+
+    # ===-------------------------------------------------------------------===#
+    # Methods
+    # ===-------------------------------------------------------------------===#
 
     @always_inline("nodebug")
-    fn get[i: Int, T: AnyRegType](self) -> T:
+    fn get[i: Int, T: Movable](self) -> ref [__lifetime_of(self)] T:
         """Get a list element at the given index.
 
         Parameters:
@@ -67,9 +86,38 @@ struct ListLiteral[*Ts: AnyRegType](Sized):
         Returns:
             The element at the given index.
         """
-        return rebind[T](
-            __mlir_op.`kgen.pack.get`[index = i.value](self.storage)
-        )
+        # FIXME: Rebinding to a different lifetime.
+        return UnsafePointer.address_of(self.storage[i]).bitcast[T]()[]
+
+    # ===-------------------------------------------------------------------===#
+    # Operator dunders
+    # ===-------------------------------------------------------------------===#
+
+    @always_inline("nodebug")
+    fn __contains__[T: EqualityComparable](self, value: T) -> Bool:
+        """Determines if a given value exists in the ListLiteral.
+
+        Parameters:
+            T: The type of the value to search for. Must implement the
+              `EqualityComparable` trait.
+
+        Args:
+            value: The value to search for in the ListLiteral.
+
+        Returns:
+            True if the value is found in the ListLiteral, False otherwise.
+        """
+
+        @parameter
+        for i in range(len(VariadicList(Ts))):
+            if _type_is_eq[Ts[i], T]():
+                var elt_ptr = UnsafePointer.address_of(self.storage[i]).bitcast[
+                    T
+                ]()
+                if elt_ptr[] == value:
+                    return True
+
+        return False
 
 
 # ===----------------------------------------------------------------------===#
@@ -78,7 +126,7 @@ struct ListLiteral[*Ts: AnyRegType](Sized):
 
 
 @value
-struct _VariadicListIter[type: AnyRegType]:
+struct _VariadicListIter[type: AnyTrivialRegType]:
     """Const Iterator for VariadicList.
 
     Parameters:
@@ -97,7 +145,7 @@ struct _VariadicListIter[type: AnyRegType]:
 
 
 @register_passable("trivial")
-struct VariadicList[type: AnyRegType](Sized):
+struct VariadicList[type: AnyTrivialRegType](Sized):
     """A utility class to access variadic function arguments. Provides a "list"
     view of the function argument so that the size of the argument list and each
     individual argument can be accessed.
@@ -106,36 +154,30 @@ struct VariadicList[type: AnyRegType](Sized):
         type: The type of the elements in the list.
     """
 
-    alias storage_type = __mlir_type[`!kgen.variadic<`, type, `>`]
-    var value: Self.storage_type
+    alias _mlir_type = __mlir_type[`!kgen.variadic<`, type, `>`]
+    var value: Self._mlir_type
     """The underlying storage for the variadic list."""
 
     alias IterType = _VariadicListIter[type]
 
     @always_inline
-    fn __init__(*value: type) -> Self:
+    fn __init__(inout self, *value: type):
         """Constructs a VariadicList from a variadic list of arguments.
 
         Args:
             value: The variadic argument list to construct the variadic list
               with.
-
-        Returns:
-            The VariadicList constructed.
         """
-        return value
+        self = value
 
     @always_inline
-    fn __init__(value: Self.storage_type) -> Self:
+    fn __init__(inout self, value: Self._mlir_type):
         """Constructs a VariadicList from a variadic argument type.
 
         Args:
             value: The variadic argument to construct the list with.
-
-        Returns:
-            The VariadicList constructed.
         """
-        return Self {value: value}
+        self.value = value
 
     @always_inline
     fn __len__(self) -> Int:
@@ -148,16 +190,16 @@ struct VariadicList[type: AnyRegType](Sized):
         return __mlir_op.`pop.variadic.size`(self.value)
 
     @always_inline
-    fn __getitem__(self, index: Int) -> type:
+    fn __getitem__(self, idx: Int) -> type:
         """Gets a single element on the variadic list.
 
         Args:
-            index: The index of the element to access on the list.
+            idx: The index of the element to access on the list.
 
         Returns:
             The element on the list corresponding to the given index.
         """
-        return __mlir_op.`pop.variadic.get`(self.value, index.value)
+        return __mlir_op.`pop.variadic.get`(self.value, idx.value)
 
     @always_inline
     fn __iter__(self) -> Self.IterType:
@@ -171,34 +213,31 @@ struct VariadicList[type: AnyRegType](Sized):
 
 @value
 struct _VariadicListMemIter[
+    elt_is_mutable: Bool, //,
     elt_type: AnyType,
-    elt_is_mutable: __mlir_type.i1,
     elt_lifetime: AnyLifetime[elt_is_mutable].type,
-    list_lifetime: ImmLifetime,
+    list_lifetime: ImmutableLifetime,
 ]:
     """Iterator for VariadicListMem.
 
     Parameters:
-        elt_type: The type of the elements in the list.
         elt_is_mutable: Whether the elements in the list are mutable.
+        elt_type: The type of the elements in the list.
         elt_lifetime: The lifetime of the elements.
         list_lifetime: The lifetime of the VariadicListMem.
     """
 
-    alias variadic_list_type = VariadicListMem[
-        elt_type, elt_is_mutable, elt_lifetime
-    ]
+    alias variadic_list_type = VariadicListMem[elt_type, elt_lifetime]
 
     var index: Int
-    var src: Reference[
-        Self.variadic_list_type, __mlir_attr.`0: i1`, list_lifetime
-    ]
+    var src: Reference[Self.variadic_list_type, list_lifetime]
 
     fn __next__(inout self) -> Self.variadic_list_type.reference_type:
         self.index += 1
         # TODO: Need to make this return a dereferenced reference, not a
         # reference that must be deref'd by the user.
-        return self.src[].__getitem__(self.index - 1)
+        # NOTE: Using UnsafePointer here to get lifetimes to match.
+        return UnsafePointer.address_of(self.src[][self.index - 1])[]
 
     fn __len__(self) -> Int:
         return len(self.src[]) - self.index
@@ -207,32 +246,38 @@ struct _VariadicListMemIter[
 # Helper to compute the union of two lifetimes:
 # TODO: parametric aliases would be nice.
 struct _lit_lifetime_union[
-    is_mutable: __mlir_type.i1,
+    is_mutable: Bool,
     a: AnyLifetime[is_mutable].type,
     b: AnyLifetime[is_mutable].type,
 ]:
     alias result = __mlir_attr[
-        `#lit.lifetime.union<`, a, `,`, b, `> : !lit.lifetime<`, is_mutable, `>`
+        `#lit.lifetime.union<`,
+        a,
+        `,`,
+        b,
+        `> : !lit.lifetime<`,
+        is_mutable.value,
+        `>`,
     ]
 
 
 struct _lit_mut_cast[
-    is_mutable: __mlir_type.i1,
+    is_mutable: Bool, //,
     operand: AnyLifetime[is_mutable].type,
-    result_mutable: __mlir_type.i1,
+    result_mutable: Bool,
 ]:
     alias result = __mlir_attr[
         `#lit.lifetime.mutcast<`,
         operand,
         `> : !lit.lifetime<`,
-        +result_mutable,
+        +result_mutable.value,
         `>`,
     ]
 
 
 struct VariadicListMem[
+    elt_is_mutable: Bool, //,
     element_type: AnyType,
-    elt_is_mutable: __mlir_type.i1,
     lifetime: AnyLifetime[elt_is_mutable].type,
 ](Sized):
     """A utility class to access variadic function arguments of memory-only
@@ -240,19 +285,19 @@ struct VariadicListMem[
     way that can be enumerated.  Each element may be accessed with `elt[]`.
 
     Parameters:
-        element_type: The type of the elements in the list.
         elt_is_mutable: True if the elements of the list are mutable for an
                         inout or owned argument.
+        element_type: The type of the elements in the list.
         lifetime: The reference lifetime of the underlying elements.
     """
 
-    alias reference_type = Reference[element_type, elt_is_mutable, lifetime]
-    alias mlir_ref_type = _LITRef[element_type, elt_is_mutable, lifetime].type
-    alias storage_type = __mlir_type[
-        `!kgen.variadic<`, Self.mlir_ref_type, `, borrow_in_mem>`
+    alias reference_type = Reference[element_type, lifetime]
+    alias _mlir_ref_type = Self.reference_type._mlir_type
+    alias _mlir_type = __mlir_type[
+        `!kgen.variadic<`, Self._mlir_ref_type, `, borrow_in_mem>`
     ]
 
-    var value: Self.storage_type
+    var value: Self._mlir_type
     """The underlying storage, a variadic list of references to elements of the
     given type."""
 
@@ -260,9 +305,13 @@ struct VariadicListMem[
     # the VariadicListMem is destroyed.
     var _is_owned: Bool
 
+    # ===-------------------------------------------------------------------===#
+    # Life cycle methods
+    # ===-------------------------------------------------------------------===#
+
     # Provide support for borrowed variadic arguments.
     @always_inline
-    fn __init__(inout self, value: Self.storage_type):
+    fn __init__(inout self, value: Self._mlir_type):
         """Constructs a VariadicList from a variadic argument type.
 
         Args:
@@ -273,13 +322,13 @@ struct VariadicListMem[
 
     # Provide support for variadics of *inout* arguments.  The reference will
     # automatically be inferred to be mutable, and the !kgen.variadic will have
-    # convention=byref.
-    alias inout_storage_type = __mlir_type[
-        `!kgen.variadic<`, Self.mlir_ref_type, `, byref>`
+    # convention=inout.
+    alias _inout_variadic_type = __mlir_type[
+        `!kgen.variadic<`, Self._mlir_ref_type, `, inout>`
     ]
 
     @always_inline
-    fn __init__(inout self, value: Self.inout_storage_type):
+    fn __init__(inout self, value: Self._inout_variadic_type):
         """Constructs a VariadicList from a variadic argument type.
 
         Args:
@@ -288,18 +337,19 @@ struct VariadicListMem[
         var tmp = value
         # We need to bitcast different argument conventions to a consistent
         # representation.  This is ugly but effective.
-        self.value = Pointer.address_of(tmp).bitcast[Self.storage_type]().load()
+        self.value = UnsafePointer.address_of(tmp).bitcast[Self._mlir_type]()[]
+        _ = tmp
         self._is_owned = False
 
     # Provide support for variadics of *owned* arguments.  The reference will
     # automatically be inferred to be mutable, and the !kgen.variadic will have
     # convention=owned_in_mem.
-    alias owned_storage_type = __mlir_type[
-        `!kgen.variadic<`, Self.mlir_ref_type, `, owned_in_mem>`
+    alias _owned_variadic_type = __mlir_type[
+        `!kgen.variadic<`, Self._mlir_ref_type, `, owned_in_mem>`
     ]
 
     @always_inline
-    fn __init__(inout self, value: Self.owned_storage_type):
+    fn __init__(inout self, value: Self._owned_variadic_type):
         """Constructs a VariadicList from a variadic argument type.
 
         Args:
@@ -308,7 +358,8 @@ struct VariadicListMem[
         var tmp = value
         # We need to bitcast different argument conventions to a consistent
         # representation.  This is ugly but effective.
-        self.value = Pointer.address_of(tmp).bitcast[Self.storage_type]().load()
+        self.value = UnsafePointer.address_of(tmp).bitcast[Self._mlir_type]()[]
+        _ = tmp
         self._is_owned = True
 
     @always_inline
@@ -328,7 +379,7 @@ struct VariadicListMem[
         # Immutable variadics never own the memory underlying them,
         # microoptimize out a check of _is_owned.
         @parameter
-        if not Bool(elt_is_mutable):
+        if not elt_is_mutable:
             return
 
         else:
@@ -339,12 +390,12 @@ struct VariadicListMem[
             # Otherwise this is a variadic of owned elements, destroy them.  We
             # destroy in backwards order to match how arguments are normally torn
             # down when CheckLifetimes is left to its own devices.
-            for i in range(len(self), 0, -1):
-                # This cannot use Reference(self[i - 1]) because the subscript
-                # will return a BValue, not an LValue.  We need to maintain the
-                # parametric mutability by keeping the Reference returned by
-                # refitem exposed.
-                self.__refitem__(i - 1).destroy_element_unsafe()
+            for i in reversed(range(len(self))):
+                UnsafePointer.address_of(self[i]).destroy_pointee()
+
+    # ===-------------------------------------------------------------------===#
+    # Trait implementations
+    # ===-------------------------------------------------------------------===#
 
     @always_inline
     fn __len__(self) -> Int:
@@ -355,64 +406,122 @@ struct VariadicListMem[
         """
         return __mlir_op.`pop.variadic.size`(self.value)
 
-    # TODO: Fix for loops + _VariadicListIter to support a __nextref__ protocol
-    # allowing us to get rid of this and make foreach iteration clean.
-    @always_inline
-    fn __getitem__(self, index: Int) -> Self.reference_type:
-        """Gets a single element on the variadic list.
-
-        Args:
-            index: The index of the element to access on the list.
-
-        Returns:
-            A low-level pointer to the element on the list corresponding to the
-            given index.
-        """
-        return Self.reference_type(
-            __mlir_op.`pop.variadic.get`(self.value, index.value)
-        )
+    # ===-------------------------------------------------------------------===#
+    # Operator dunders
+    # ===-------------------------------------------------------------------===#
 
     @always_inline
-    fn __refitem__(
-        self, index: Int
-    ) -> Reference[
-        element_type,
-        elt_is_mutable,
+    fn __getitem__(
+        self, idx: Int
+    ) -> ref [
         _lit_lifetime_union[
             elt_is_mutable,
             lifetime,
             # cast mutability of self to match the mutability of the element,
             # since that is what we want to use in the ultimate reference and
             # the union overall doesn't matter.
-            _lit_mut_cast[
-                __mlir_attr.`0: i1`, __lifetime_of(self), elt_is_mutable
-            ].result,
-        ].result,
-    ]:
+            _lit_mut_cast[__lifetime_of(self), elt_is_mutable].result,
+        ].result
+    ] element_type:
         """Gets a single element on the variadic list.
 
         Args:
-            index: The index of the element to access on the list.
+            idx: The index of the element to access on the list.
 
         Returns:
             A low-level pointer to the element on the list corresponding to the
             given index.
         """
-        return __mlir_op.`pop.variadic.get`(self.value, index.value)
+        return __get_litref_as_mvalue(
+            __mlir_op.`pop.variadic.get`(self.value, idx.value)
+        )
 
     fn __iter__(
         self,
-    ) -> _VariadicListMemIter[
-        element_type, elt_is_mutable, lifetime, __lifetime_of(self)
-    ]:
+    ) -> _VariadicListMemIter[element_type, lifetime, __lifetime_of(self),]:
         """Iterate over the list.
 
         Returns:
             An iterator to the start of the list.
         """
         return _VariadicListMemIter[
-            element_type, elt_is_mutable, lifetime, __lifetime_of(self)
+            element_type,
+            lifetime,
+            __lifetime_of(self),
         ](0, self)
+
+
+# ===----------------------------------------------------------------------===#
+# _LITRefPackHelper
+# ===----------------------------------------------------------------------===#
+
+
+alias _AnyTypeMetaType = __mlir_type[`!lit.anytrait<`, AnyType, `>`]
+
+
+@value
+struct _LITRefPackHelper[
+    is_mutable: Bool, //,
+    lifetime: AnyLifetime[is_mutable].type,
+    address_space: __mlir_type.index,
+    element_trait: _AnyTypeMetaType,
+    *element_types: element_trait,
+]:
+    """This struct mirrors the !lit.ref.pack type, and provides aliases and
+    methods that are useful for working with it."""
+
+    alias _mlir_type = __mlir_type[
+        `!lit.ref.pack<:variadic<`,
+        element_trait,
+        `> `,
+        element_types,
+        `, `,
+        lifetime,
+        `, `,
+        address_space,
+        `>`,
+    ]
+
+    var storage: Self._mlir_type
+
+    # This is the element_types list lowered to `variadic<type>` type for kgen.
+    alias _kgen_element_types = rebind[
+        __mlir_type.`!kgen.variadic<!kgen.type>`
+    ](Self.element_types)
+
+    # Use variadic_ptr_map to construct the type list of the !kgen.pack that the
+    # !lit.ref.pack will lower to.  It exposes the pointers introduced by the
+    # references.
+    alias _variadic_pointer_types = __mlir_attr[
+        `#kgen.param.expr<variadic_ptr_map, `,
+        Self._kgen_element_types,
+        `, 0: index>: !kgen.variadic<!kgen.type>`,
+    ]
+
+    # This is the !kgen.pack type with pointer elements.
+    alias kgen_pack_with_pointer_type = __mlir_type[
+        `!kgen.pack<:variadic<type> `, Self._variadic_pointer_types, `>`
+    ]
+
+    # This rebinds `in_pack` to the equivalent `!kgen.pack` with kgen pointers.
+    fn get_as_kgen_pack(self) -> Self.kgen_pack_with_pointer_type:
+        return rebind[Self.kgen_pack_with_pointer_type](self.storage)
+
+    alias _variadic_with_pointers_removed = __mlir_attr[
+        `#kgen.param.expr<variadic_ptrremove_map, `,
+        Self._variadic_pointer_types,
+        `>: !kgen.variadic<!kgen.type>`,
+    ]
+
+    # This is the `!kgen.pack` type that happens if one loads all the elements
+    # of the pack.
+    alias loaded_kgen_pack_type = __mlir_type[
+        `!kgen.pack<:variadic<type> `, Self._variadic_with_pointers_removed, `>`
+    ]
+
+    # This returns the stored KGEN pack after loading all of the elements.
+    fn get_loaded_kgen_pack(self) -> Self.loaded_kgen_pack_type:
+        return __mlir_op.`kgen.pack.load`(self.get_as_kgen_pack())
 
 
 # ===----------------------------------------------------------------------===#
@@ -420,14 +529,12 @@ struct VariadicListMem[
 # ===----------------------------------------------------------------------===#
 
 
-# TODO: We need to genericize VariadicPack over the kinds of types it holds,
-# instead of erasing them to AnyType. This would allow packs of values known to
-# be Stringable for example.
 @register_passable
 struct VariadicPack[
-    elt_is_mutable: __mlir_type.i1,
-    lifetime: AnyLifetime[elt_is_mutable].type,
-    *element_types: AnyType,
+    elt_is_mutable: __mlir_type.i1, //,
+    lifetime: AnyLifetime[Bool {value: elt_is_mutable}].type,
+    element_trait: _AnyTypeMetaType,
+    *element_types: element_trait,
 ](Sized):
     """A utility class to access variadic pack  arguments and provide an API for
     doing things with them.
@@ -436,12 +543,13 @@ struct VariadicPack[
         elt_is_mutable: True if the elements of the list are mutable for an
                         inout or owned argument pack.
         lifetime: The reference lifetime of the underlying elements.
+        element_trait: The trait that each element of the pack conforms to.
         element_types: The list of types held by the argument pack.
     """
 
-    alias _mlir_pack_type = __mlir_type[
+    alias _mlir_type = __mlir_type[
         `!lit.ref.pack<:variadic<`,
-        AnyType,
+        element_trait,
         `> `,
         element_types,
         `, `,
@@ -449,11 +557,15 @@ struct VariadicPack[
         `>`,
     ]
 
-    var _value: Self._mlir_pack_type
+    var _value: Self._mlir_type
     var _is_owned: Bool
 
+    # ===-------------------------------------------------------------------===#
+    # Life cycle methods
+    # ===-------------------------------------------------------------------===#
+
     @always_inline
-    fn __init__(inout self, value: Self._mlir_pack_type, is_owned: Bool):
+    fn __init__(inout self, value: Self._mlir_type, is_owned: Bool):
         """Constructs a VariadicPack from the internal representation.
 
         Args:
@@ -470,21 +582,18 @@ struct VariadicPack[
         # Immutable variadics never own the memory underlying them,
         # microoptimize out a check of _is_owned.
         @parameter
-        if not Bool(elt_is_mutable):
-            return
-        else:
+        if Bool(elt_is_mutable):
             # If the elements are unowned, just return.
             if not self._is_owned:
                 return
 
-            alias len = Self.__len__()
-
             @parameter
-            fn destroy_elt[i: Int]():
-                # destroy the elements in reverse order.
-                self.get_element[len - i - 1]().destroy_element_unsafe()
+            for i in reversed(range(Self.__len__())):
+                UnsafePointer.address_of(self[i]).destroy_pointee()
 
-            unroll[destroy_elt, len]()
+    # ===-------------------------------------------------------------------===#
+    # Trait implementations
+    # ===-------------------------------------------------------------------===#
 
     @always_inline
     @staticmethod
@@ -494,9 +603,15 @@ struct VariadicPack[
         Returns:
             The number of elements in the variadic pack.
         """
-        return __mlir_attr[
-            `#kgen.param.expr<variadic_size,`, element_types, `> : index`
-        ]
+
+        @parameter
+        fn variadic_size(
+            x: __mlir_type[`!kgen.variadic<`, element_trait, `>`]
+        ) -> Int:
+            return __mlir_op.`pop.variadic.size`(x)
+
+        alias result = variadic_size(element_types)
+        return result
 
     @always_inline
     fn __len__(self) -> Int:
@@ -507,12 +622,14 @@ struct VariadicPack[
         """
         return Self.__len__()
 
+    # ===-------------------------------------------------------------------===#
+    # Operator dunders
+    # ===-------------------------------------------------------------------===#
+
     @always_inline
-    fn get_element[
+    fn __getitem__[
         index: Int
-    ](self) -> Reference[
-        element_types[index.value], Self.elt_is_mutable, Self.lifetime
-    ]:
+    ](self) -> ref [Self.lifetime] element_types[index.value]:
         """Return a reference to an element of the pack.
 
         Parameters:
@@ -522,11 +639,24 @@ struct VariadicPack[
             A reference to the element.  The Reference's mutability follows the
             mutability of the pack argument convention.
         """
+        var litref_elt = __mlir_op.`lit.ref.pack.extract`[index = index.value](
+            self._value
+        )
 
-        return __mlir_op.`lit.ref.pack.get`[index = index.value](self._value)
+        # Rebind the !lit.ref to agree on the element type.  This is needed
+        # because we're getting a low level rebind to AnyType when the
+        # element_types[index] expression is erased to AnyType for Reference.
+        var ref_elt = UnsafePointer.address_of(
+            __get_litref_as_mvalue(litref_elt)
+        )
+        return ref_elt.bitcast[element_types[index.value]]()[]
+
+    # ===-------------------------------------------------------------------===#
+    # Methods
+    # ===-------------------------------------------------------------------===#
 
     @always_inline
-    fn each[func: fn[T: AnyType] (T) -> None](self):
+    fn each[func: fn[T: element_trait] (T) capturing -> None](self):
         """Apply a function to each element of the pack in order.  This applies
         the specified function (which must be parametric on the element type) to
         each element of the pack, from the first element to the last, passing
@@ -537,7 +667,22 @@ struct VariadicPack[
         """
 
         @parameter
-        fn unrolled[i: Int]():
-            func(self.get_element[i]()[])
+        for i in range(Self.__len__()):
+            func(self[i])
 
-        unroll[unrolled, Self.__len__()]()
+    @always_inline
+    fn each_idx[
+        func: fn[idx: Int, T: element_trait] (T) capturing -> None
+    ](self):
+        """Apply a function to each element of the pack in order.  This applies
+        the specified function (which must be parametric on the element type) to
+        each element of the pack, from the first element to the last, passing
+        in each element as a borrowed argument.
+
+        Parameters:
+            func: The function to apply to each element.
+        """
+
+        @parameter
+        for i in range(Self.__len__()):
+            func[i](self[i])

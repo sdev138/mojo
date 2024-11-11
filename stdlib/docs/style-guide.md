@@ -48,17 +48,41 @@ All done! ✨ 🍰 ✨
 Unless otherwise noted, Mojo standard library code should follow the formatting
 produced by `mojo format`.
 
+It is advised, to avoid forgetting, to set-up `pre-commit`, which will format
+your changes automatically at each commit, and will also ensure that you
+always have the latest linting tools applied.
+
+To do so, install pre-commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+and that's it!
+
+#### API Doc String Validation
+
+Mojo provides a command line utility, `mojo doc`, to validate the API doc
+strings in your code. This ensures that your doc strings are correctly
+formatted and consistent with the Mojo style guidelines.
+Note that you should not have any warnings.
+
+```bash
+> mojo doc --diagnose-missing-doc-strings --validate-doc-strings -o /dev/null stdlib/src/
+```
+
+Note that this is also included in the pre-commit. So if you have `pre-commit`
+enabled, this will run automatically before committing. If you want to run it
+manually with pre-commit, just run
+
+```bash
+pre-commit run --all-files
+```
+
 #### Whitespace
 
-- Use 4-space indentation.
-- Do NOT use Tab characters.
 - Use vertical whitespace only as needed to organize code into logical sections.
-
-*We encourage updating your editor settings to be consistent with the above.*
-
-#### Column limit
-
-Mojo code has a column limit (line length) of 80 characters.
 
 #### File license header
 
@@ -95,31 +119,72 @@ defined on structs.
 struct MyStruct(Sized, Stringable):
     """Description goes here."""
 
+    # ===-------------------------------------------------------------------===#
+    # Aliases
+    # ===-------------------------------------------------------------------===#
+
+    alias factor = 5
+
+    # ===-------------------------------------------------------------------===#
+    # Fields
+    # ===-------------------------------------------------------------------===#
+
     var field: Int
 
-    # ===------------------------------------------------------------------===#
-    # Constructors
-    # ===------------------------------------------------------------------===#
+    # ===-------------------------------------------------------------------===#
+    # Life cycle methods
+    # ===-------------------------------------------------------------------===#
 
-    fn __init__(self):
-        ...
+    fn __init__(...)
+    fn __moveinit__(...)
+    fn __copyinit__(...)
 
-    # ===------------------------------------------------------------------=== #
-    # Trait Interfaces
-    # ===------------------------------------------------------------------=== #
+    fn __del__(...)
 
-    fn __len__(self) -> Int:
-        ...
+    # ===-------------------------------------------------------------------===#
+    # Factory methods
+    # ===-------------------------------------------------------------------===#
 
-    fn __str__(self) -> String:
-        ...
+    @staticmethod
+    fn foo(...) -> Self[...]
 
-    # ===------------------------------------------------------------------=== #
+    # ===-------------------------------------------------------------------===#
+    # Operator dunders
+    # ===-------------------------------------------------------------------===#
+
+    # Basically anything that "backs" special syntax: [..], *, +, /, //, etc...
+
+    fn __getitem__
+    fn __getitem__
+
+    fn __add__
+    fn __iadd__
+
+    # ===-------------------------------------------------------------------===#
+    # Trait implementations
+    # ===-------------------------------------------------------------------===#
+
+    fn __bool__
+    fn __len__
+    fn __str__
+
+    fn __abs__
+
+    # ===-------------------------------------------------------------------===#
     # Methods
-    # ===------------------------------------------------------------------=== #
+    # ===-------------------------------------------------------------------===#
+
+    fn unsafe_ptr(..)   # e.g.
 ```
 
 ## Code conventions
+
+### Python Standard Library
+
+We want to be a good member of the Python family and aim to become a full
+superset, so we inherit naming from the Python standard library, including any
+inconsistencies. These naming inconsistencies are the only exceptions to the
+naming conventions outlined below.
 
 ### Identifier naming conventions
 
@@ -153,9 +218,9 @@ The following table shows our preferred use of different case styles.
 | `alias` type             | `alias Int8 = Scalar[DType.int8]`                      | `PascalCase`
 | `alias` value global / local scope | `alias CHUNK_SIZE = 32` / `alias chunk_size = 32` | `SCREAMING_SNAKE_CASE` / `snake_case`
 | `struct` type parameter  | `struct List[ElementType: Movable]`                    | `PascalCase`
-| `struct` value parameter | `struct Array[ElementType: Movable, Length: Int]`      | `PascalCase`
+| `struct` value parameter | `struct Array[ElementType: Movable, length: Int]`      | `snake_case`
 | `fn` type parameter      | `fn do_it[Action: Actionable](action: Action)`         | `PascalCase`
-| `fn` value parameter     | `fn repeat[Count: Int]()`                              | `PascalCase`
+| `fn` value parameter     | `fn repeat[count: Int]()`                              | `snake_case`
 
 Although these are our style conventions, not all code currently adheres to it.
 When preparing a new change, it is important to adhere to the style and naming
@@ -176,8 +241,8 @@ struct LinkedList[ElementType: Movable] # 🟢 Preferred
 #### ℹ️ Order type parameters ahead of value parameters
 
 ```mojo
-struct Array[LENGTH: Int, ElementType: Movable] # 🔴 Avoid
-struct Array[ElementType: Movable, Length: Int] # 🟢 Preferred
+struct Array[length: Int, ElementType: Movable] # 🔴 Avoid
+struct Array[ElementType: Movable, length: Int] # 🟢 Preferred
 ```
 
 ### Container lifecycle semantics
@@ -228,7 +293,7 @@ Every public function and public struct (including data fields) in the standard
 library must have docstrings (code comments that describe the API behavior).
 Mojo includes tooling to ensure that public functions include docstrings.
 
-You can run `./stdlib/scripts/check-doc-strings.sh` to validate
+You can run `./stdlib/scripts/check-docstrings.py` to validate
 docstrings. If the command exits with a `0` exit code, the docstrings are
 compliant; otherwise, an error will be shown. This is also enforced by the LSP
 with warnings for anything that doesn’t conform, you can generate docstrings
@@ -272,6 +337,9 @@ fn add_param_arg[foo: Int](bar: Int) -> Int:
     constrained[foo > 0]()
     return foo + bar
 ```
+
+For more detailed style guidelines, see the
+[Mojo docstring style guide](docstring-style-guide.md).
 
 ### Testing
 

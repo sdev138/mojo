@@ -13,45 +13,26 @@
 """Implements functionality to start a mojo execution."""
 
 from sys import external_call
+from sys.ffi import _get_global
 
 
-@always_inline
-fn _get_global[
-    name: StringLiteral,
-    init_fn: fn (Pointer[NoneType]) -> Pointer[NoneType],
-    destroy_fn: fn (Pointer[NoneType]) -> None,
-](payload: Pointer[NoneType] = Pointer[NoneType]()) -> Pointer[NoneType]:
+fn _init_global_runtime(
+    ignored: UnsafePointer[NoneType],
+) -> UnsafePointer[NoneType]:
     return external_call[
-        "KGEN_CompilerRT_GetGlobalOrCreate", Pointer[NoneType]
-    ](StringRef(name), payload, init_fn, destroy_fn)
-
-
-fn _init_global_runtime(ignored: Pointer[NoneType]) -> Pointer[NoneType]:
-    """Intialize the global runtime. This is a singleton that handle the common
-    case where the runtime has the same number of threads as the number of cores.
-    """
-    return external_call[
-        "KGEN_CompilerRT_LLCL_CreateRuntime", Pointer[NoneType]
+        "KGEN_CompilerRT_AsyncRT_CreateRuntime", UnsafePointer[NoneType]
     ](0)
 
 
-fn _destroy_global_runtime(ptr: Pointer[NoneType]):
+fn _destroy_global_runtime(ptr: UnsafePointer[NoneType]):
     """Destroy the global runtime if ever used."""
-    external_call["KGEN_CompilerRT_LLCL_DestroyRuntime", NoneType](ptr)
+    external_call["KGEN_CompilerRT_AsyncRT_DestroyRuntime", NoneType](ptr)
 
 
 @always_inline
-fn _get_current_or_global_runtime() -> Pointer[NoneType]:
-    """Returns the current runtime, or returns the Mojo singleton global
-    runtime, creating it if it does not already exist. When Mojo is used within
-    the Modular Execution Engine the current runtime will be that already
-    constructed by the execution engine. If the user has already manually
-    constructed a runtime and added tasks to it, the current runtime for those
-    tasks will be that runtime. Otherwise, the singleton runtime is used, which
-    is created with number of threads equal to the number of cores.
-    """
+fn _get_current_or_global_runtime() -> UnsafePointer[NoneType]:
     var current_runtime = external_call[
-        "KGEN_CompilerRT_LLCL_GetCurrentRuntime", Pointer[NoneType]
+        "KGEN_CompilerRT_AsyncRT_GetCurrentRuntime", UnsafePointer[NoneType]
     ]()
     if current_runtime:
         return current_runtime
@@ -66,7 +47,7 @@ fn __wrap_and_execute_main[
     argc: Int32,
     argv: __mlir_type[`!kgen.pointer<!kgen.pointer<scalar<ui8>>>`],
 ) -> Int32:
-    """Define a C-ABI compatible entry point for non-raising main function"""
+    """Define a C-ABI compatible entry point for non-raising main function."""
 
     # Initialize the global runtime.
     _ = _get_current_or_global_runtime()
@@ -90,7 +71,7 @@ fn __wrap_and_execute_raising_main[
     argc: Int32,
     argv: __mlir_type[`!kgen.pointer<!kgen.pointer<scalar<ui8>>>`],
 ) -> Int32:
-    """Define a C-ABI compatible entry point for a raising main function"""
+    """Define a C-ABI compatible entry point for a raising main function."""
 
     # Initialize the global runtime.
     _ = _get_current_or_global_runtime()
@@ -119,7 +100,7 @@ fn __wrap_and_execute_object_raising_main[
     argv: __mlir_type[`!kgen.pointer<!kgen.pointer<scalar<ui8>>>`],
 ) -> Int32:
     """Define a C-ABI compatible entry point for a raising main function that
-    returns an object"""
+    returns an object."""
 
     fn wrapped_main() raises:
         _ = main_func()

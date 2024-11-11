@@ -15,6 +15,8 @@
 These are Mojo built-ins, so you don't need to import them.
 """
 
+from sys.intrinsics import _type_is_eq
+
 from utils._visualizers import lldb_formatter_wrapping_type
 
 # ===----------------------------------------------------------------------===#
@@ -23,39 +25,106 @@ from utils._visualizers import lldb_formatter_wrapping_type
 
 
 @lldb_formatter_wrapping_type
-@register_passable
-struct Tuple[*Ts: AnyRegType](Sized, CollectionElement):
+struct Tuple[*element_types: Movable](Sized, Movable):
     """The type of a literal tuple expression.
 
     A tuple consists of zero or more values, separated by commas.
 
     Parameters:
-        Ts: The elements type.
+        element_types: The elements type.
     """
 
-    var storage: __mlir_type[`!kgen.pack<`, Ts, `>`]
+    alias _mlir_type = __mlir_type[
+        `!kgen.pack<:!kgen.variadic<`,
+        Movable,
+        `> `,
+        element_types,
+        `>`,
+    ]
+
+    var storage: Self._mlir_type
     """The underlying storage for the tuple."""
 
     @always_inline("nodebug")
-    fn __init__(*args: *Ts) -> Self:
+    fn __init__(inout self, owned *args: *element_types):
         """Construct the tuple.
 
         Args:
             args: Initial values.
-
-        Returns:
-            Constructed tuple.
         """
-        return Self {storage: args}
+        self = Self(storage=args^)
 
     @always_inline("nodebug")
-    fn __copyinit__(existing: Self) -> Self:
-        """Copy construct the tuple.
+    fn __init__(
+        inout self,
+        *,
+        owned storage: VariadicPack[_, Movable, element_types],
+    ):
+        """Construct the tuple from a low-level internal representation.
+
+        Args:
+            storage: The variadic pack storage to construct from.
+        """
+
+        # Mark 'self.storage' as being initialized so we can work on it.
+        __mlir_op.`lit.ownership.mark_initialized`(
+            __get_mvalue_as_litref(self.storage)
+        )
+
+        # Move each element into the tuple storage.
+        @parameter
+        for i in range(Self.__len__()):
+            UnsafePointer.address_of(storage[i]).move_pointee_into(
+                UnsafePointer.address_of(self[i])
+            )
+
+        # Mark the elements as destroyed.
+        storage._is_owned = False
+
+    fn __del__(owned self):
+        """Destructor that destroys all of the elements."""
+
+        # Run the destructor on each member, the destructor of !kgen.pack is
+        # trivial and won't do anything.
+        @parameter
+        for i in range(Self.__len__()):
+            UnsafePointer.address_of(self[i]).destroy_pointee()
+
+    @always_inline("nodebug")
+    fn __moveinit__(inout self, owned existing: Self):
+        """Move construct the tuple.
+
+        Args:
+            existing: The value to move from.
+        """
+        # Mark 'storage' as being initialized so we can work on it.
+        __mlir_op.`lit.ownership.mark_initialized`(
+            __get_mvalue_as_litref(self.storage)
+        )
+
+        @parameter
+        for i in range(Self.__len__()):
+            UnsafePointer.address_of(existing[i]).move_pointee_into(
+                UnsafePointer.address_of(self[i])
+            )
+
+    @always_inline
+    @staticmethod
+    fn __len__() -> Int:
+        """Return the number of elements in the tuple.
 
         Returns:
-            Constructed tuple.
+            The tuple length.
         """
-        return Self {storage: existing.storage}
+
+        @parameter
+        fn variadic_size(
+            x: __mlir_type[`!kgen.variadic<`, Movable, `>`]
+        ) -> Int:
+            return __mlir_op.`pop.variadic.size`(x)
+
+        alias result = variadic_size(element_types)
+        return result
 
     @always_inline("nodebug")
     fn __len__(self) -> Int:
@@ -64,11 +133,36 @@ struct Tuple[*Ts: AnyRegType](Sized, CollectionElement):
         Returns:
             The tuple length.
         """
-        return __mlir_op.`pop.variadic.size`(Ts)
+        return Self.__len__()
 
     @always_inline("nodebug")
-    fn get[i: Int, T: AnyRegType](self) -> T:
-        """Get a tuple element.
+    fn __getitem__[
+        idx: Int
+    ](ref [_]self: Self) -> ref [__lifetime_of(self)] element_types[idx.value]:
+        """Get a reference to an element in the tuple.
+
+        Parameters:
+            idx: The element to return.
+
+        Returns:
+            A reference to the specified element.
+        """
+        # Return a reference to an element at the specified index, propagating
+        # mutability of self.
+        var storage_kgen_ptr = UnsafePointer.address_of(self.storage).address
+
+        # KGenPointer to the element.
+        var elt_kgen_ptr = __mlir_op.`kgen.pack.gep`[index = idx.value](
+            storage_kgen_ptr
+        )
+        # Use an immortal mut reference, which converts to self's lifetime.
+        return UnsafePointer(elt_kgen_ptr)[]
+
+    # TODO(#38268): Remove this method when references and parameter expressions
+    # cooperate better.  We can't handle the use in test_simd without this.
+    @always_inline("nodebug")
+    fn get[i: Int, T: Movable](self) -> ref [__lifetime_of(self)] T:
+        """Get a tuple element and rebind to the specified type.
 
         Parameters:
             i: The element index.
@@ -77,31 +171,37 @@ struct Tuple[*Ts: AnyRegType](Sized, CollectionElement):
         Returns:
             The tuple element at the requested index.
         """
-        return rebind[T](
-            __mlir_op.`kgen.pack.get`[index = i.value](self.storage)
-        )
+        return rebind[Reference[T, __lifetime_of(self)]](Reference(self[i]))[]
 
-    @staticmethod
-    fn _offset[i: Int]() -> Int:
-        constrained[i >= 0, "index must be positive"]()
+    @always_inline("nodebug")
+    fn __contains__[T: EqualityComparable](self, value: T) -> Bool:
+        """Return whether the tuple contains the specified value.
+
+        For example:
+
+        ```mojo
+        var t = Tuple(True, 1, 2.5)
+        if 1 in t:
+            print("t contains 1")
+        ```
+
+        Args:
+            value: The value to search for.
+
+        Parameters:
+            T: The type of the value.
+
+        Returns:
+            True if the value is in the tuple, False otherwise.
+        """
 
         @parameter
-        if i == 0:
-            return 0
-        else:
-            return _align_up(
-                Self._offset[i - 1]()
-                + _align_up(sizeof[Ts[i - 1]](), alignof[Ts[i - 1]]()),
-                alignof[Ts[i]](),
-            )
+        for i in range(len(VariadicList(element_types))):
 
+            @parameter
+            if _type_is_eq[element_types[i], T]():
+                var elt_ptr = UnsafePointer.address_of(self[i]).bitcast[T]()
+                if elt_ptr[] == value:
+                    return True
 
-# ===----------------------------------------------------------------------=== #
-# Utilities
-# ===----------------------------------------------------------------------=== #
-
-
-@always_inline
-fn _align_up(value: Int, alignment: Int) -> Int:
-    var div_ceil = (value + alignment - 1)._positive_div(alignment)
-    return div_ceil * alignment
+        return False
